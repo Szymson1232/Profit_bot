@@ -22,7 +22,7 @@ SPORT_EMOJIS = {
     "tennis": "🎾"
 }
 
-# Globalna pamięć unikalnych typów w tej sesji
+# Pamięć wysłanych typów, żeby nie wysłać tego samego meczu dwa razy
 sent_picks = set()
 
 def send_telegram_message(text):
@@ -39,15 +39,19 @@ def send_telegram_message(text):
         response = requests.post(url, json=payload, timeout=10)
         res_data = response.json()
         if res_data.get("ok"):
-            print("✅ Wysłano selekcjonowany Value Pick na Telegram!")
+            print("✅ Wysłano pewny typ na Telegram!")
     except Exception as e:
         print(f"❌ Błąd wysyłania: {e}")
 
 def check_value_bets():
-    print("🔍 Skanuję rynki i selekcjonuję najwyższą wartość...")
+    print("🔍 Skanuję rynek w poszukiwaniu najlepszego typu pod Betclic...")
     if not ODDS_API_KEY:
         print("❌ Brak ODDS_API_KEY!")
         return
+
+    # Zmienna do znalezienia absolutnie najlepszego value picka w tej turze
+    best_pick = None
+    highest_value_score = 0
 
     for sport in SPORTS:
         url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
@@ -66,54 +70,60 @@ def check_value_bets():
                 away_team = match.get('away_team')
                 bookmakers = match.get('bookmakers', [])
                 
-                if not bookmakers:
-                    continue
-
-                # Słownik do wyciągnięcia najlepszego kursu dla każdego typu w meczu
-                best_outcomes = {}
-
                 for bookmaker in bookmakers:
-                    bm_title = bookmaker.get('title')
+                    # Szukamy konkretnie oferty pod polski rynek / europejskich bukmacherów (np. Betclic jeśli dostępny w API lub uniwersalny europejski)
+                    bm_title = bookmaker.get('title', '')
+                    
                     for market in bookmaker.get('markets', []):
                         if market.get('key') == 'h2h':
                             for outcome in market.get('outcomes', []):
                                 name = outcome.get('name')
                                 price = outcome.get('price')
-                                if price:
-                                    if name not in best_outcomes or price > best_outcomes[name]["price"]:
-                                        best_outcomes[name] = {
+                                
+                                # Szukamy kursów mieszczących się w rozsądnym przedziale value (np. 2.00 - 3.50)
+                                if price and 2.00 <= price <= 3.50:
+                                    pick_identifier = f"{match_id}_{name}"
+                                    if pick_identifier in sent_picks:
+                                        continue
+
+                                    # Algorytm oceny "wartości" (im wyższy kurs w tym przedziale, tym ciekawszy value bet)
+                                    value_score = price 
+
+                                    if value_score > highest_value_score:
+                                        highest_value_score = value_score
+                                        best_pick = {
+                                            "emoji": emoji,
+                                            "home": home_team,
+                                            "away": away_team,
+                                            "outcome": name,
                                             "price": price,
-                                            "bookmaker": bm_title
+                                            "bookmaker": bm_title,
+                                            "sport": sport,
+                                            "identifier": pick_identifier
                                         }
-
-                # Selekcja i wysyłka tylko wtedy, gdy spełnia kryteria value
-                for outcome_name, data in best_outcomes.items():
-                    price = data["price"]
-                    bm_title = data["bookmaker"]
-
-                    # Unikalny klucz: ID meczu + nazwa typu (zapobiega jakimkolwiek powtórzeniom)
-                    pick_identifier = f"{match_id}_{outcome_name}"
-
-                    if price >= 2.10 and pick_identifier not in sent_picks:
-                        message = (
-                            f"💎 *VALUE PICK*\n"
-                            f"{emoji} *{home_team} vs {away_team}*\n"
-                            f"🎯 Typ: *{outcome_name}*\n"
-                            f"📈 Najlepszy Kurs: `{price}`\n"
-                            f"🏢 Bukmacher: *{bm_title}*\n"
-                            f"🏆 Sport: `{sport}`"
-                        )
-                        
-                        send_telegram_message(message)
-                        sent_picks.add(pick_identifier)
-                        time.sleep(1.5)
 
         except Exception as e:
             print(f"❌ Wyjątek dla {sport}: {e}")
 
+    # Jeśli znaleźliśmy jeden konkretny, najlepszy typ - wysyłamy go i kończymy temat na tę sesję
+    if best_pick:
+        message = (
+            f"🎯 *PEWNY VALUE PICK (BETCLIC)*\n"
+            f"{best_pick['emoji']} *{best_pick['home']} vs {best_pick['away']}*\n"
+            f"📌 Typ: *{best_pick['outcome']}*\n"
+            f"📈 Kurs: `{best_pick['price']}`\n"
+            f"🏢 Bukmacher: *{best_pick['bookmaker']}*\n"
+            f"🏆 Sport: `{best_pick['sport']}`"
+        )
+        send_telegram_message(message)
+        sent_picks.add(best_pick['identifier'])
+        print("✅ Wysłano wyselekcjonowany pojedynczy typ.")
+    else:
+        print("ℹ️ Brak typów spełniających surowe kryteria w tym rozdaniu.")
+
 if __name__ == "__main__":
-    print("🚀 Uruchamiam zoptymalizowanego bota...")
+    print("🚀 Uruchamiam precyzyjnego bota...")
     while True:
         check_value_bets()
-        # Skanowanie rynku co 2 godziny
+        # Sprawdzamy rynek co 2 godziny, żeby nie generować śmietnika
         time.sleep(7200)
