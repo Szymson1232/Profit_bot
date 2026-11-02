@@ -4,7 +4,7 @@ import json
 import requests
 
 # --- KONFIGURACJA ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "9258087483:AAFaDk---UhFbJLKc6hx0ZywwI5Qt2-8qiM")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 CHAT_ID = os.getenv("CHAT_ID", "7221307802")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "78de4134e569cdc3a5a251cec2ac9563")
 REGION = "eu"
