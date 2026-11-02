@@ -2,7 +2,7 @@ import requests
 import time
 
 # --- KONFIGURACJA (WPISZ SWOJE DANE) ---
-TELEGRAM_TOKEN = "9258087483:AAFaDk---UhFbJLKc6hx0ZywwI5Qt2-8qiM"
+TELEGRAM_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 CHAT_ID = "7221307802"
 
 # Darmowy klucz z the-odds-api.com
