@@ -1,74 +1,69 @@
-import requests
+import os
 import time
+import requests
 
-# --- KONFIGURACJA (WPISZ SWOJE DANE) ---
-TELEGRAM_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
-CHAT_ID = "7221307802"
+# Konfiguracja środowiskowa
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Darmowy klucz z the-odds-api.com
-ODDS_API_KEY = "78de4134e569cdc3a5a251cec2ac9563"
-SPORT = "soccer_italy_serie_a"  # Wybieramy np. Serie A pod naszą dzisiejszą Atalantę!
+SPORT = "soccer_italy_serie_a"  # Przykładowy sport / liga
 REGION = "eu"
 
-def send_telegram_message(message):
+def send_telegram_message(text):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("❌ Brak skonfigurowanego tokena Telegrama lub CHAT_ID w zmiennych środowiskowych!")
+        return
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
-        "text": message,
+        "text": text,
         "parse_mode": "Markdown"
     }
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        print("✅ Alert wysłany na Telegram pomyślnie!")
-    else:
-        print(f"❌ Błąd wysyłania: {response.text}")
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        res_data = response.json()
+        if not res_data.get("ok"):
+            print(f"❌ Błąd wysyłania: {res_data}")
+        else:
+            print("✅ Wiadomość VIP została wysłana na Telegram!")
+    except Exception as e:
+        print(f"❌ Wyjątek podczas wysyłania wiadomości na Telegram: {e}")
 
 def check_value_bets():
     print("🔍 Skanuję rynek w poszukiwaniu meczów i kursów...")
-    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
-    
-    response = requests.get(url)
-    if response.status_code != 200:
-        print(f"Błąd pobierania danych z API: {response.status_code} - {response.text}")
+    if not ODDS_API_KEY:
+        print("❌ Brak ODDS_API_KEY w zmiennych środowiskowych!")
         return
 
-    matches = response.json()
-    print(f"Pobrano {len(matches)} nadchodzących meczów.")
+    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
+    
+    try:
+        response = requests.get(url, timeout=15)
+        if response.status_code != 200:
+            print(f"⚠️ Błąd pobierania danych z API: {response.status_code} - {response.text}")
+            return  # Bezpieczny powrót, bot nie crashuje, spróbuje w kolejnym cyklu
 
-    for match in matches:
-        home_team = match['home_team']
-        away_team = match['away_team']
-        
-        # Pobieramy kursy od pierwszego dostępnego bukmachera w API
-        bookmakers = match.get('bookmakers', [])
-        if not bookmakers:
-            continue
+        matches = response.json()
+        print(f"Pobrano {len(matches)} nadchodzących meczów.")
+
+        for match in matches:
+            home_team = match['home_team']
+            away_team = match['away_team']
+            print(f"Znaleziono mecz: {home_team} vs {away_team}")
             
-        bookie = bookmakers[0]
-        bookie_name = bookie['title']
-        market = bookie['markets'][0]
-        outcomes = {out['name']: out['price'] for out in market['outcomes']}
-        
-        home_odds = outcomes.get(home_team)
-        away_odds = outcomes.get(away_team)
-        
-        # PROSTA LOGIKA TESTOWA: 
-        # Szukamy meczu, gdzie kurs na gospodarza jest warty uwagi (np. > 1.40)
-        if home_odds and home_odds > 1.40:
-            message = (
-                f"🔥 **TESTOWy VALUE ALERT** 🔥\n\n"
-                f"⚽ **Mecz:** {home_team} vs {away_team}\n"
-                f"🎯 **Sprawdzany typ:** 1 (Gospodarz)\n"
-                f"📊 **Aktualny kurs ({bookie_name}):** `{home_odds}`\n"
-                f"💰 **Zalecana stawka:** 50 PLN (Flat)\n\n"
-                f"🤖 *Bot testowy uruchomiony lokalnie.*"
-            )
-            
-            # Wypisujemy w konsoli i wysyłamy na Telegram
-            print(f"Znaleziono mecz: {home_team} vs {away_team} (Kurs: {home_odds})")
-            send_telegram_message(message)
-            break  # Wysyłamy jeden testowy i przerywamy pętlę na ten moment
+            # Przykładowe powiadomienie testowe VIP (możesz dostosować format)
+            # message = f"💎 *VIP VALUE BET*\n⚽ {home_team} vs {away_team}"
+            # send_telegram_message(message)
+            # break # odkomentuj, jeśli chcesz wysłać tylko pierwszy mecz do testów
+
+    except Exception as e:
+        print(f"❌ Wyjątek podczas połączenia z API: {e}")
 
 if __name__ == "__main__":
-    # Uruchomienie jednorazowe do testu lokalnego
-    check_value_bets()
+    print("🚀 Uruchamiam bota na Railway...")
+    while True:
+        check_value_bets()
+        # Czekaj np. 2 godziny (7200 sekund) przed kolejnym skanowaniem
+        time.sleep(7200)
