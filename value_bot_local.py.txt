@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 
 # --- KONFIGURACJA ---
@@ -8,16 +9,30 @@ CHAT_ID = os.getenv("CHAT_ID", "7221307802")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "78de4134e569cdc3a5a251cec2ac9563")
 REGION = "eu"
 
-# Szeroka lista sportów do monitorowania w chmurze
+DATA_FILE = "active_bets.json"
+
 SPORTS_LIST = [
-    "soccer_italy_serie_a",          # Piłka nożna: Serie A
-    "soccer_epl",                    # Piłka nożna: Premier League
-    "basketball_nba",                # Koszykówka: NBA
-    "icehockey_nhl",                 # Hokej: NHL
-    "baseball_mlb",                  # Baseball: MLB
-    "tennis_atp",                    # Tenis: ATP
-    "esports_league_of_legends",     # Esport: LoL
+    "soccer_italy_serie_a",
+    "soccer_epl",
+    "basketball_nba",
+    "icehockey_nhl",
+    "baseball_mlb",
+    "tennis_atp",
+    "esports_league_of_legends",
 ]
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"bets": [], "units_balance": 0.0, "pln_balance": 0.0}
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"bets": [], "units_balance": 0.0, "pln_balance": 0.0}
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -29,66 +44,197 @@ def send_telegram_message(message):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("✅ Alert wysłany na Telegram pomyślnie!")
-        else:
-            print(f"❌ Błąd wysyłania: {response.text}")
+            res_json = response.json()
+            return res_json.get("result", {}).get("message_id")
     except Exception as e:
-        print(f"❌ Wyjątek przy wysyłaniu na Telegram: {e}")
+        print(f"❌ Błąd Telegrama: {e}")
+    return None
 
-def check_value_bets():
-    print("🔍 Skanuję rynki dla wielu dyscyplin sportowych...")
+def edit_telegram_message(message_id, new_message):
+    if not message_id:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+    payload = {
+        "chat_id": CHAT_ID,
+        "message_id": message_id,
+        "text": new_message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"❌ Błąd edycji wiadomości: {e}")
+
+def check_and_settle_bets(data):
+    print("🔄 Sprawdzam wyniki zakończonych zakładów...")
+    if not data["bets"]:
+        print("Brak aktywnych zakładów do rozliczenia.")
+        return
+
+    still_active = []
     
-    for sport in SPORTS_LIST:
-        print(f"➡️ Sprawdzam sport: {sport}")
-        url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
+    for bet in data["bets"]:
+        sport = bet["sport"]
+        match_id = bet["match_id"]
         
+        url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores/?apiKey={ODDS_API_KEY}&daysFrom=2"
         try:
             response = requests.get(url, timeout=10)
             if response.status_code != 200:
-                print(f"Błąd dla {sport}: {response.status_code} - {response.text}")
-                continue  # Przechodzi do kolejnego sportu w przypadku błędu
+                still_active.append(bet)
+                continue
+            
+            scores_data = response.json()
+            match_found = False
+            
+            for match in scores_data:
+                if match.get("id") == match_id:
+                    match_found = True
+                    if match.get("completed"):
+                        scores = match.get("scores")
+                        home_team = match.get("home_team")
+                        away_team = match.get("away_team")
+                        
+                        home_score = 0
+                        away_score = 0
+                        if scores:
+                            for s in scores:
+                                if s["name"] == home_team:
+                                    home_score = int(s["score"])
+                                if s["name"] == away_team:
+                                    away_score = int(s["score"])
+                        
+                        won = home_score > away_score
+                        odds = bet["odds"]
+                        msg_id = bet["telegram_message_id"]
+                        
+                        if won:
+                            profit_units = odds - 1.0
+                            profit_pln = profit_units * 25.0
+                            data["units_balance"] += profit_units
+                            data["pln_balance"] += profit_pln
+                            
+                            updated_text = (
+                                f"🔥 **BETCLIC VALUE ALERT** 🔥\n\n"
+                                f"🏆 **Sport/Liga:** `{sport}`\n"
+                                f"⚽ **Mecz:** {home_team} vs {away_team}\n"
+                                f"🎯 **Typ:** {home_team} (Gospodarz)\n"
+                                f"📊 **Kurs (Betclic):** `{odds}`\n"
+                                f"💰 **Stawka:** 25 PLN (1j)\n\n"
+                                f"✅ **WYNIK: WYGRANA (+{profit_units:.2f}j / +{profit_pln:.2f} PLN)**\n"
+                                f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` (`{data['pln_balance']:+.2f} PLN`)"
+                            )
+                        else:
+                            data["units_balance"] -= 1.0
+                            data["pln_balance"] -= 25.0
+                            
+                            updated_text = (
+                                f"🔥 **BETCLIC VALUE ALERT** 🔥\n\n"
+                                f"🏆 **Sport/Liga:** `{sport}`\n"
+                                f"⚽ **Mecz:** {bet['home_team']} vs {bet['away_team']}\n"
+                                f"🎯 **Typ:** {bet['home_team']} (Gospodarz)\n"
+                                f"📊 **Kurs (Betclic):** `{odds}`\n"
+                                f"💰 **Stawka:** 25 PLN (1j)\n\n"
+                                f"❌ **WYNIK: PRZEGRANA (-1.00j / -25.00 PLN)**\n"
+                                f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` (`{data['pln_balance']:+.2f} PLN`)"
+                            )
+                        
+                        edit_telegram_message(msg_id, updated_text)
+                        print(f"Rozliczono mecz {bet['home_team']} vs {bet['away_team']}: {'WYGRANA' if won else 'PRZEGRANA'}")
+                    else:
+                        still_active.append(bet)
+                    break
+            if not match_found:
+                still_active.append(bet)
+        except Exception as e:
+            print(f"❌ Błąd przy sprawdzaniu wyniku: {e}")
+            still_active.append(bet)
+            
+    data["bets"] = still_active
+    save_data(data)
+
+def check_value_bets(data):
+    print("🔍 Skanuję rynki pod kątem Betclica...")
+    
+    for sport in SPORTS_LIST:
+        url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code != 200:
+                continue
 
             matches = response.json()
-            print(f"Pobrano {len(matches)} meczów dla {sport}.")
-
             for match in matches:
+                match_id = match['id']
+                
+                if any(b['match_id'] == match_id for b in data['bets']):
+                    continue
+
                 home_team = match['home_team']
                 away_team = match['away_team']
                 
                 bookmakers = match.get('bookmakers', [])
                 if not bookmakers:
                     continue
-                    
-                bookie = bookmakers[0]
-                bookie_name = bookie['title']
-                market = bookie['markets'][0]
-                outcomes = {out['name']: out['price'] for out in market['outcomes']}
                 
-                home_odds = outcomes.get(home_team)
+                home_odds_list = []
+                betclic_odds = None
                 
-                # Przykładowy warunek value (np. kurs > 1.40)
-                if home_odds and home_odds > 1.40:
-                    message = (
-                        f"🔥 **MULTI-SPORT VALUE ALERT** 🔥\n\n"
+                # Przeszukujemy bukmacherów i szukamy Betclica (w API występuje jako "Betclic")
+                for bookie in bookmakers:
+                    bookie_name = bookie['title']
+                    markets = bookie.get('markets', [])
+                    for m in markets:
+                        if m['key'] == 'h2h':
+                            outcomes = {out['name']: out['price'] for out in m['outcomes']}
+                            h_odd = outcomes.get(home_team)
+                            if h_odd:
+                                home_odds_list.append(h_odd)
+                                if "betclic" in bookie_name.lower():
+                                    betclic_odds = h_odd
+
+                if not home_odds_list or not betclic_odds:
+                    continue
+
+                # Średnia rynkowa do weryfikacji, czy Betclic daje value
+                avg_market_odds = sum(home_odds_list) / len(home_odds_list)
+
+                # Warunek: Kurs w Betclicu wynosi min. 1.50 i jest wyższy lub równy średniej rynkowej (lub ją przewyższa)
+                if betclic_odds >= 1.50 and betclic_odds >= avg_market_odds:
+                    initial_message = (
+                        f"🎯 **BETCLIC VALUE ALERT** 🎯\n\n"
                         f"🏆 **Sport/Liga:** `{sport}`\n"
                         f"⚽ **Mecz:** {home_team} vs {away_team}\n"
                         f"🎯 **Typ:** {home_team} (Gospodarz)\n"
-                        f"📊 **Kurs ({bookie_name}):** `{home_odds}`\n"
-                        f"💰 **Stawka:** 50 PLN (Flat)\n\n"
-                        f"🤖 *Bot 24/7 na Railway (Cykl co 2h).*"
+                        f"📊 **Kurs (Betclic):** `{betclic_odds}`\n"
+                        f"📉 *Średnia rynkowa:* `{avg_market_odds:.2f}`\n"
+                        f"💰 **Stawka:** 25 PLN (1j)\n\n"
+                        f"⏳ *Oczekiwanie na wynik meczu...*\n"
+                        f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` (`{data['pln_balance']:+.2f} PLN`)"
                     )
                     
-                    print(f"Znaleziono value: {home_team} vs {away_team} ({sport}) - Kurs: {home_odds}")
-                    send_telegram_message(message)
-                        
+                    msg_id = send_telegram_message(initial_message)
+                    if msg_id:
+                        print(f"🎯 Znaleziono bet na Betclic: {home_team} vs {away_team} po kursie {betclic_odds}")
+                        data['bets'].append({
+                            "match_id": match_id,
+                            "sport": sport,
+                            "home_team": home_team,
+                            "away_team": away_team,
+                            "odds": betclic_odds,
+                            "telegram_message_id": msg_id
+                        })
+                        save_data(data)
+                        break 
+                
         except Exception as e:
-            print(f"❌ Wyjątek przy {sport}: {e}")
+            print(f"❌ Wyjątek przy skanowaniu Betclica dla {sport}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Wielodyscyplinowy bot startuje i wchodzi w pętlę 24/7...")
+    print("🚀 Bot Betclic Value 24/7 wystartował...")
     while True:
-        check_value_bets()
-        
-        # Przerwa między pełnymi cyklami skanowania: 2 godziny (7200 sekund)
-        print("⏳ Zakończono cykl. Oczekiwanie 2 godziny do kolejnego skanowania rynków...")
+        data = load_data()
+        check_and_settle_bets(data)
+        check_value_bets(data)
+        print("⏳ Cykl zakończony. Uśpienie na 2 godziny...")
         time.sleep(7200)
