@@ -7,7 +7,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Lista różnych sportów do skanowania w poszukiwaniu value picków
 SPORTS = [
     "soccer_italy_serie_a",
     "soccer_epl",
@@ -49,11 +48,9 @@ def check_value_bets():
         
         try:
             response = requests.get(url, timeout=15)
-            
-            # Obsługa błędów API (np. 502, 422 itp.) bez wywalania bota
             if response.status_code != 200:
-                print(f"⚠️ Ostrzeżenie dla sportu {sport}: API zwróciło status {response.status_code} - {response.text}")
-                continue  # Przechodzimy do kolejnego sportu zamiast crashować skrypt
+                print(f"⚠️ Ostrzeżenie dla sportu {sport}: API zwróciło status {response.status_code}")
+                continue
 
             matches = response.json()
             print(f"Pobrano {len(matches)} nadchodzących meczów dla ligi/sportu: {sport}")
@@ -62,11 +59,12 @@ def check_value_bets():
                 home_team = match['home_team']
                 away_team = match['away_team']
                 
-                # Tutaj wchodzi Twoja logika obliczania value i bukmacherów
-                # Przykład detekcji value picka (przykładowy warunek/placeholder pod rozbudowę):
-                # if detected_value:
-                #     message = f"💎 *VIP VALUE PICK*\n⚽ {home_team} vs {away_team}\n🎯 Sport: {sport}"
-                #     send_telegram_message(message)
+                # Tutaj bot wysyła powiadomienie (możesz później dodać własny warunek na value)
+                message = f"💎 *VALUE PICK / KURS*\n⚽ {home_team} vs {away_team}\n🎯 Sport: {sport}"
+                send_telegram_message(message)
+                
+                # Krótki sleep, żeby nie spamić API Telegrama zbyt szybkimi żądaniami
+                time.sleep(1)
 
         except Exception as e:
             print(f"❌ Wyjątek podczas pobierania danych dla {sport}: {e}")
@@ -75,5 +73,4 @@ if __name__ == "__main__":
     print("🚀 Uruchamiam zautomatyzowanego bota na Railway...")
     while True:
         check_value_bets()
-        # Skanowanie rynku co 2 godziny (7200 sekund), żeby nie przepalić limitu zapytań API
         time.sleep(7200)
