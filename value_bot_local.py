@@ -5,7 +5,7 @@ import requests
 # Konfiguracja środowiskowa
 TELEGRAM_TOKEN = os.getenv("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 CHAT_ID = os.getenv("7221307802")
-ODDS_API_KEY = os.getenv("78de4134e569cdc3a5a251cec2ac9563"
+ODDS_API_KEY = os.getenv("78de4134e569cdc3a5a251cec2ac9563")
 SPORT = "soccer_italy_serie_a"  # Przykładowy sport / liga
 REGION = "eu"
 
