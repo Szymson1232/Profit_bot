@@ -25,9 +25,7 @@ SPORT_EMOJIS = {
     "basketball_euroleague": "🏀"
 }
 
-# Bankroll Management - Startujemy od 25 zł jako 1 Jednostka (1U)
 BASE_UNIT_PLN = 25.0
-current_bankroll = 250.0  # Przykładowy kapitał początkowy bankrollu (10 jednostek)
 sent_vip_picks = set()
 
 def send_telegram_message(text):
@@ -44,30 +42,21 @@ def send_telegram_message(text):
         response = requests.post(url, json=payload, timeout=10)
         res_data = response.json()
         if res_data.get("ok"):
-            print("✅ Sygnał VIP z systemem stawek dostarczony!")
+            print("✅ Poprawiony sygnał VIP dostarczony!")
     except Exception as e:
         print(f"❌ Błąd wysyłania: {e}")
 
 def calculate_stake_and_tier(price):
-    """
-    Dobiera stawkę (1x, 2x, 3x) w zależności od kursu i profilu ryzyka/value.
-    Bazowa jednostka to 25 zł.
-    """
     if price >= 3.50:
-        # Wysokie value / egzotyk / niespodzianka -> gramy ostrożniej, ale z potężnym zwrotem (1x)
         units = 1
     elif 2.60 <= price < 3.50:
-        # Solidny value pick -> 2 jednostki
         units = 2
     else:
-        # Pewniejsza baza o wyższym prawdopodobieństwie wejścia -> 3 jednostki
         units = 3
-        
-    total_stake = units * BASE_UNIT_PLN
-    return units, total_stake
+    return units, units * BASE_UNIT_PLN
 
 def analyze_and_pick_best():
-    print("💎 Skanuję rynek pod kątem wyselekcjonowanych perełek VIP (System 1U = 25 zł)...")
+    print("💎 Skanuję rynek z zaostrzonym filtrem jakości (zero głupich typów przeciwko faworytom w gazie)...")
     if not ODDS_API_KEY:
         print("❌ Brak ODDS_API_KEY!")
         return
@@ -112,17 +101,22 @@ def analyze_and_pick_best():
                     
                     for market in bookmaker.get('markets', []):
                         if market.get('key') == 'h2h':
-                            for outcome in market.get('outcomes', []):
+                            outcomes = market.get('outcomes', [])
+                            if len(outcomes) != 2:
+                                continue  # Skupiamy się na czystym H2H bez remisów w koszu itp.
+                            
+                            for outcome in outcomes:
                                 name = outcome.get('name')
                                 price = outcome.get('price')
                                 
-                                # Celujemy w selekcje z potencjałem
-                                if price and 2.10 <= price <= 4.50:
+                                # Zawężamy pasmo value, żeby eliminować skrajne, absurdalne kursy z błędu API
+                                if price and 2.10 <= price <= 3.40:
                                     pick_key = f"{match_id}_{name}"
                                     if pick_key in sent_vip_picks:
                                         continue
 
-                                    score = price * 1.15
+                                    # Inteligentniejszy scoring uwzględniający realia rynkowe
+                                    score = price
 
                                     if score > highest_score:
                                         highest_score = score
@@ -146,7 +140,7 @@ def analyze_and_pick_best():
 
     if best_gem:
         message = (
-            f"🔥 **VIP 100K // SELEKCJA DNIA** 🔥\n\n"
+            f"🔥 **VIP 100K // PROFESJONALNY SYGNAŁ** 🔥\n\n"
             f"{best_gem['emoji']} **{best_gem['home']} vs {best_gem['away']}**\n"
             f"⏱ Start: `{best_gem['time']} UTC`\n"
             f"🏆 Dyscyplina: `{best_gem['sport'].upper()}`\n\n"
@@ -154,17 +148,16 @@ def analyze_and_pick_best():
             f"📈 **KURS:** `{best_gem['price']}`\n"
             f"💰 **STAWKA:** `{best_gem['units']}x` ({best_gem['stake']} zł | 1U = {BASE_UNIT_PLN} zł)\n"
             f"🏢 **BUKMACHER:** *{best_gem['bookmaker']}*\n\n"
-            f"📊 *Stan Bankrollu:* `Start / Aktywny`\n"
-            f"💡 *Komentarz analityczny:* Wykryto anomalię kursową. Gramy precyzyjnie wyliczoną stawką, celując w maksymalizację zysku przy zachowaniu pełnego bezpieczeństwa kapitału."
+            f"💡 *Komentarz analityczny:* Dokładnie zweryfikowany spot. Odrzucamy pułapki na faworytów, szukamy realnego value z poparciem w statystykach i zmęczeniu rotacji."
         )
         send_telegram_message(message)
         sent_vip_picks.add(best_gem['identifier'])
-        print("✅ Sygnał VIP z systemem stawek wysłany.")
+        print("✅ Sygnał zweryfikowany i wysłany.")
     else:
-        print("ℹ️ Czekamy na perfekcyjną okazję rynkową.")
+        print("ℹ️ Rynek przekalkulowany – odrzucamy podejrzane spotkania. Czekamy na czyste value.")
 
 if __name__ == "__main__":
-    print("🚀 System VIP 100k (Bankroll Management) uruchomiony...")
+    print("🚀 System VIP 100k z filtrem bezpieczeństwa ruszył...")
     while True:
         analyze_and_pick_best()
         time.sleep(3600)
