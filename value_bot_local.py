@@ -22,6 +22,9 @@ SPORT_EMOJIS = {
     "tennis": "🎾"
 }
 
+# Globalna pamięć wysłanych meczów, żeby bot nie spamował przy ponownym sprawdzeniu
+sent_matches = set()
+
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         return
@@ -46,9 +49,6 @@ def check_value_bets():
         print("❌ Brak ODDS_API_KEY!")
         return
 
-    # Zbiór zapobiegający spamowaniu tym samym meczem w tej samej sesji
-    sent_matches = set()
-
     for sport in SPORTS:
         url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
         
@@ -64,39 +64,48 @@ def check_value_bets():
                 home_team = match.get('home_team')
                 away_team = match.get('away_team')
                 
-                # Unikalny klucz meczu, żeby wysłać go tylko raz
-                match_key = f"{home_team}_{away_team}"
+                match_key = f"{sport}_{home_team}_{away_team}"
                 if match_key in sent_matches:
                     continue
 
                 bookmakers = match.get('bookmakers', [])
-                for bookmaker in bookmakers:
-                    bm_title = bookmaker.get('title', 'Bukmacher')
-                    markets = bookmaker.get('markets', [])
-                    
-                    for market in markets:
-                        if market.get('key') == 'h2h':
-                            outcomes = market.get('outcomes', [])
-                            outcomes_text = ""
-                            for outcome in outcomes:
-                                name = outcome.get('name')
-                                price = outcome.get('price')
-                                outcomes_text += f"▪️ *{name}*: `{price}`\n"
+                if not bookmakers:
+                    continue
 
+                # Bierze pierwszego buka z brzegu dla przykładu
+                bookmaker = bookmakers[0]
+                bm_title = bookmaker.get('title', 'Bukmacher')
+                markets = bookmaker.get('markets', [])
+                
+                for market in markets:
+                    if market.get('key') == 'h2h':
+                        outcomes = market.get('outcomes', [])
+                        outcomes_text = ""
+                        should_send = False
+
+                        for outcome in outcomes:
+                            name = outcome.get('name')
+                            price = outcome.get('price')
+                            outcomes_text += f"▪️ *{name}*: `{price}`\n"
+                            
+                            # Warunek value (np. szukamy kursów >= 2.00, żeby nie zasypywać śmieciem)
+                            if price and price >= 2.00:
+                                should_send = True
+
+                        if should_send:
                             message = (
                                 f"💎 *VALUE PICK*\n"
-                                f"{emoji} *{home_team} vs {away_team}*\n"
-                                f"🏆 Liga/Sport: `{sport}`\n"
+                                f"{emoji} *{home_team} vs *{away_team}*\n"
+                                f"🏆 Sport: `{sport}`\n"
                                 f"🏢 Bukmacher: *{bm_title}*\n\n"
-                                f"📊 *Kursy (1X2 / H2H):*\n"
+                                f"📊 *Kursy:*\n"
                                 f"{outcomes_text}"
                             )
                             
                             send_telegram_message(message)
                             sent_matches.add(match_key)
-                            time.sleep(1)
-                            break 
-                    break
+                            time.sleep(1.5)
+                        break
 
         except Exception as e:
             print(f"❌ Wyjątek dla {sport}: {e}")
@@ -105,5 +114,5 @@ if __name__ == "__main__":
     print("🚀 Uruchamiam bota...")
     while True:
         check_value_bets()
-        # Kolejne pełne skanowanie dopiero za 2 godziny
+        # Kolejne pełne sprawdzenie rynku za 2 godziny
         time.sleep(7200)
