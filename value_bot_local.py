@@ -12,7 +12,7 @@ SPORTS = [
     "soccer_italy_serie_a",
     "soccer_epl",
     "basketball_nba",
-    "tennis_atp"
+    "tennis"
 ]
 
 REGION = "eu"
