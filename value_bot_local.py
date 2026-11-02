@@ -15,7 +15,6 @@ SPORTS = [
 
 REGION = "eu"
 
-# Słownik emotek pod konkretne sporty
 SPORT_EMOJIS = {
     "soccer_italy_serie_a": "⚽",
     "soccer_epl": "⚽",
@@ -25,7 +24,6 @@ SPORT_EMOJIS = {
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("❌ Brak skonfigurowanego tokena Telegrama lub CHAT_ID!")
         return
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -37,12 +35,10 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         res_data = response.json()
-        if not res_data.get("ok"):
-            print(f"❌ Błąd wysyłania powiadomienia: {res_data}")
-        else:
-            print("✅ Wiadomość Value Bet wysłana na Telegram!")
+        if res_data.get("ok"):
+            print("✅ Wysłano powiadomienie na Telegram!")
     except Exception as e:
-        print(f"❌ Wyjątek podczas wysyłania: {e}")
+        print(f"❌ Błąd wysyłania: {e}")
 
 def check_value_bets():
     print("🔍 Skanuję rynki...")
@@ -50,13 +46,15 @@ def check_value_bets():
         print("❌ Brak ODDS_API_KEY!")
         return
 
+    # Zbiór zapobiegający spamowaniu tym samym meczem w tej samej sesji
+    sent_matches = set()
+
     for sport in SPORTS:
         url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
         
         try:
             response = requests.get(url, timeout=15)
             if response.status_code != 200:
-                print(f"⚠️ Status {response.status_code} dla {sport}")
                 continue
 
             matches = response.json()
@@ -65,9 +63,13 @@ def check_value_bets():
             for match in matches:
                 home_team = match.get('home_team')
                 away_team = match.get('away_team')
-                bookmakers = match.get('bookmakers', [])
+                
+                # Unikalny klucz meczu, żeby wysłać go tylko raz
+                match_key = f"{home_team}_{away_team}"
+                if match_key in sent_matches:
+                    continue
 
-                # Szukamy pierwszego lepszego bukmachera z ofertą H2H, żeby wyciągnąć kursy i typy
+                bookmakers = match.get('bookmakers', [])
                 for bookmaker in bookmakers:
                     bm_title = bookmaker.get('title', 'Bukmacher')
                     markets = bookmaker.get('markets', [])
@@ -75,15 +77,12 @@ def check_value_bets():
                     for market in markets:
                         if market.get('key') == 'h2h':
                             outcomes = market.get('outcomes', [])
-                            
-                            # Budujemy czytelną wiadomość z opcjami kursowymi na dany mecz
                             outcomes_text = ""
                             for outcome in outcomes:
                                 name = outcome.get('name')
                                 price = outcome.get('price')
                                 outcomes_text += f"▪️ *{name}*: `{price}`\n"
 
-                            # Przykładowy próg value (możesz dostosować warunek)
                             message = (
                                 f"💎 *VALUE PICK*\n"
                                 f"{emoji} *{home_team} vs {away_team}*\n"
@@ -94,11 +93,10 @@ def check_value_bets():
                             )
                             
                             send_telegram_message(message)
+                            sent_matches.add(match_key)
                             time.sleep(1)
-                            break # Wysyłamy dla meczu od pierwszego dostępnego buka i idziemy dalej
-                
-                # Ogranicznik, żeby nie zalać Telegrama tysiącem wiadomości na start
-                time.sleep(2)
+                            break 
+                    break
 
         except Exception as e:
             print(f"❌ Wyjątek dla {sport}: {e}")
@@ -107,4 +105,5 @@ if __name__ == "__main__":
     print("🚀 Uruchamiam bota...")
     while True:
         check_value_bets()
+        # Kolejne pełne skanowanie dopiero za 2 godziny
         time.sleep(7200)
