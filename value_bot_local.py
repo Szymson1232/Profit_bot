@@ -14,7 +14,7 @@ def send_telegram_message(text):
         print("❌ Brak skonfigurowanego tokena Telegrama lub CHAT_ID w zmiennych środowiskowych!")
         return
     
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{78de4134e569cdc3a5a251cec2ac9563}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
         "text": text,
