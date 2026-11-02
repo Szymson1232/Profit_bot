@@ -1,1 +1,1 @@
-worker: python value_bot_local.py
+web: python value_bot_local.py
