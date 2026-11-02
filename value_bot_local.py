@@ -22,7 +22,7 @@ SPORT_EMOJIS = {
     "tennis": "🎾"
 }
 
-# Globalna pamięć wysłanych meczów, żeby bot nie spamował przy ponownym sprawdzeniu
+# Globalna pamięć wysłanych meczów
 sent_matches = set()
 
 def send_telegram_message(text):
@@ -72,40 +72,45 @@ def check_value_bets():
                 if not bookmakers:
                     continue
 
-                # Bierze pierwszego buka z brzegu dla przykładu
-                bookmaker = bookmakers[0]
-                bm_title = bookmaker.get('title', 'Bukmacher')
-                markets = bookmaker.get('markets', [])
-                
-                for market in markets:
-                    if market.get('key') == 'h2h':
-                        outcomes = market.get('outcomes', [])
-                        outcomes_text = ""
-                        should_send = False
-
-                        for outcome in outcomes:
-                            name = outcome.get('name')
-                            price = outcome.get('price')
-                            outcomes_text += f"▪️ *{name}*: `{price}`\n"
-                            
-                            # Warunek value (np. szukamy kursów >= 2.00, żeby nie zasypywać śmieciem)
-                            if price and price >= 2.00:
-                                should_send = True
-
-                        if should_send:
-                            message = (
-                                f"💎 *VALUE PICK*\n"
-                                f"{emoji} *{home_team} vs *{away_team}*\n"
-                                f"🏆 Sport: `{sport}`\n"
-                                f"🏢 Bukmacher: *{bm_title}*\n\n"
-                                f"📊 *Kursy:*\n"
-                                f"{outcomes_text}"
-                            )
-                            
-                            send_telegram_message(message)
-                            sent_matches.add(match_key)
-                            time.sleep(1.5)
+                # Szukamy kursu u bukmacherów
+                match_sent = False
+                for bookmaker in bookmakers:
+                    if match_sent:
                         break
+                        
+                    bm_title = bookmaker.get('title', 'Bukmacher')
+                    markets = bookmaker.get('markets', [])
+                    
+                    for market in markets:
+                        if market.get('key') == 'h2h':
+                            outcomes = market.get('outcomes', [])
+                            outcomes_text = ""
+                            should_send = False
+
+                            for outcome in outcomes:
+                                name = outcome.get('name')
+                                price = outcome.get('price')
+                                outcomes_text += f"▪️ *{name}*: `{price}`\n"
+                                
+                                # Filtr kursów (np. >= 2.00)
+                                if price and price >= 2.00:
+                                    should_send = True
+
+                            if should_send:
+                                message = (
+                                    f"💎 *VALUE PICK*\n"
+                                    f"{emoji} *{home_team} vs {away_team}*\n"
+                                    f"🏆 Sport: `{sport}`\n"
+                                    f"🏢 Bukmacher: *{bm_title}*\n\n"
+                                    f"📊 *Kursy:*\n"
+                                    f"{outcomes_text}"
+                                )
+                                
+                                send_telegram_message(message)
+                                sent_matches.add(match_key)
+                                match_sent = True
+                                time.sleep(1)
+                                break
 
         except Exception as e:
             print(f"❌ Wyjątek dla {sport}: {e}")
@@ -114,5 +119,4 @@ if __name__ == "__main__":
     print("🚀 Uruchamiam bota...")
     while True:
         check_value_bets()
-        # Kolejne pełne sprawdzenie rynku za 2 godziny
         time.sleep(7200)
