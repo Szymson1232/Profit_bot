@@ -1,0 +1,84 @@
+import os
+import time
+import requests
+
+# --- KONFIGURACJA (Pobieranie ze zmiennych środowiskowych Railway lub wartości domyślne) ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "9258087483:AAFaDk---UhFbJLKc6hx0ZywwI5Qt2-8qiM")
+CHAT_ID = os.getenv("CHAT_ID", "7221307802")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "78de4134e569cdc3a5a251cec2ac9563")
+
+SPORT = "soccer_italy_serie_a"  # Serie A
+REGION = "eu"
+
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("✅ Alert wysłany na Telegram pomyślnie!")
+        else:
+            print(f"❌ Błąd wysyłania: {response.text}")
+    except Exception as e:
+        print(f"❌ Wyjątek przy wysyłaniu na Telegram: {e}")
+
+def check_value_bets():
+    print("🔍 Skanuję rynek w poszukiwaniu meczów i kursów...")
+    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"Błąd pobierania danych z API: {response.status_code} - {response.text}")
+            return
+
+        matches = response.json()
+        print(f"Pobrano {len(matches)} nadchodzących meczów.")
+
+        for match in matches:
+            home_team = match['home_team']
+            away_team = match['away_team']
+            
+            bookmakers = match.get('bookmakers', [])
+            if not bookmakers:
+                continue
+                
+            bookie = bookmakers[0]
+            bookie_name = bookie['title']
+            market = bookie['markets'][0]
+            outcomes = {out['name']: out['price'] for out in market['outcomes']}
+            
+            home_odds = outcomes.get(home_team)
+            away_odds = outcomes.get(away_team)
+            
+            # PROSTA LOGIKA TESTOWA: 
+            if home_odds and home_odds > 1.40:
+                message = (
+                    f"🔥 **VALUE ALERT** 🔥\n\n"
+                    f"⚽ **Mecz:** {home_team} vs {away_team}\n"
+                    f"🎯 **Sprawdzany typ:** 1 (Gospodarz)\n"
+                    f"📊 **Aktualny kurs ({bookie_name}):** `{home_odds}`\n"
+                    f"💰 **Zalecana stawka:** 50 PLN (Flat)\n\n"
+                    f"🤖 *Bot uruchomiony 24/7 na Railway.*"
+                )
+                
+                print(f"Znaleziono mecz: {home_team} vs {away_team} (Kurs: {home_odds})")
+                send_telegram_message(message)
+                break  # Wysyłamy jeden i przerywamy pętlę w tym cyklu
+                
+    except Exception as e:
+        print(f"❌ Wyjątek podczas skanowania rynku: {e}")
+
+if __name__ == "__main__":
+    print("🚀 Bot startuje i wchodzi w pętlę 24/7...")
+    while True:
+        check_value_bets()
+        
+        # Przerwa między skanovaniami (np. 1800 sekund = 30 minut)
+        # Dzięki temu nie wyczerpiesz limitu darmowych zapytań do API
+        print("⏳ Oczekiwanie na kolejne skanowanie rynku (30 minut)...")
+        time.sleep(1800)
