@@ -115,28 +115,34 @@ def check_and_settle_bets(data):
                             data["pln_balance"] += profit_pln
                             
                             updated_text = (
-                                f"🔥 **BETCLIC VALUE ALERT** 🔥\n\n"
-                                f"🏆 **Sport/Liga:** `{sport}`\n"
-                                f"⚽ **Mecz:** {home_team} vs {away_team}\n"
-                                f"🎯 **Typ:** {home_team} (Gospodarz)\n"
+                                f"⚡ **PROFIT_BOT // VIP PICK** ⚡\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📌 **Dyscyplina:** `{sport.upper()}`\n"
+                                f"⚔️ **Spotkanie:** `{bet['home_team']} vs {bet['away_team']}`\n"
+                                f"🎯 **Typ:** `{bet['home_team']} (Gospodarz)`\n"
                                 f"📊 **Kurs (Betclic):** `{odds}`\n"
-                                f"💰 **Stawka:** 25 PLN (1j)\n\n"
-                                f"✅ **WYNIK: WYGRANA (+{profit_units:.2f}j / +{profit_pln:.2f} PLN)**\n"
-                                f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` (`{data['pln_balance']:+.2f} PLN`)"
+                                f"💵 **Stawka:** `25 PLN` (1j)\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"✅ **STATUS: WIN (+{profit_units:.2f}j / +{profit_pln:.2f} PLN)**\n\n"
+                                f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` | `CZIKATA: {data['pln_balance']:+.2f} PLN`\n"
+                                f"🤖 *Autonomous Value Engine v2.4*"
                             )
                         else:
                             data["units_balance"] -= 1.0
                             data["pln_balance"] -= 25.0
                             
                             updated_text = (
-                                f"🔥 **BETCLIC VALUE ALERT** 🔥\n\n"
-                                f"🏆 **Sport/Liga:** `{sport}`\n"
-                                f"⚽ **Mecz:** {bet['home_team']} vs {bet['away_team']}\n"
-                                f"🎯 **Typ:** {bet['home_team']} (Gospodarz)\n"
+                                f"⚡ **PROFIT_BOT // VIP PICK** ⚡\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📌 **Dyscyplina:** `{sport.upper()}`\n"
+                                f"⚔️ **Spotkanie:** `{bet['home_team']} vs {bet['away_team']}`\n"
+                                f"🎯 **Typ:** `{bet['home_team']} (Gospodarz)`\n"
                                 f"📊 **Kurs (Betclic):** `{odds}`\n"
-                                f"💰 **Stawka:** 25 PLN (1j)\n\n"
-                                f"❌ **WYNIK: PRZEGRANA (-1.00j / -25.00 PLN)**\n"
-                                f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` (`{data['pln_balance']:+.2f} PLN`)"
+                                f"💵 **Stawka:** `25 PLN` (1j)\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"❌ **STATUS: LOST (-1.00j / -25.00 PLN)**\n\n"
+                                f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` | `CZIKATA: {data['pln_balance']:+.2f} PLN`\n"
+                                f"🤖 *Autonomous Value Engine v2.4*"
                             )
                         
                         edit_telegram_message(msg_id, updated_text)
@@ -180,7 +186,6 @@ def check_value_bets(data):
                 home_odds_list = []
                 betclic_odds = None
                 
-                # Przeszukujemy bukmacherów i szukamy Betclica (w API występuje jako "Betclic")
                 for bookie in bookmakers:
                     bookie_name = bookie['title']
                     markets = bookie.get('markets', [])
@@ -196,21 +201,21 @@ def check_value_bets(data):
                 if not home_odds_list or not betclic_odds:
                     continue
 
-                # Średnia rynkowa do weryfikacji, czy Betclic daje value
                 avg_market_odds = sum(home_odds_list) / len(home_odds_list)
 
-                # Warunek: Kurs w Betclicu wynosi min. 1.50 i jest wyższy lub równy średniej rynkowej (lub ją przewyższa)
                 if betclic_odds >= 1.50 and betclic_odds >= avg_market_odds:
                     initial_message = (
-                        f"🎯 **BETCLIC VALUE ALERT** 🎯\n\n"
-                        f"🏆 **Sport/Liga:** `{sport}`\n"
-                        f"⚽ **Mecz:** {home_team} vs {away_team}\n"
-                        f"🎯 **Typ:** {home_team} (Gospodarz)\n"
+                        f"⚡ **PROFIT_BOT // VIP PICK** ⚡\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📌 **Dyscyplina:** `{sport.upper()}`\n"
+                        f"⚔️ **Spotkanie:** `{home_team} vs {away_team}`\n"
+                        f"🎯 **Typ:** `{home_team} (Gospodarz)`\n"
                         f"📊 **Kurs (Betclic):** `{betclic_odds}`\n"
-                        f"📉 *Średnia rynkowa:* `{avg_market_odds:.2f}`\n"
-                        f"💰 **Stawka:** 25 PLN (1j)\n\n"
-                        f"⏳ *Oczekiwanie na wynik meczu...*\n"
-                        f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` (`{data['pln_balance']:+.2f} PLN`)"
+                        f"💵 **Stawka:** `25 PLN` (1j)\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⏳ **STATUS: Oczekiwanie na rozstrzygnięcie...**\n\n"
+                        f"📈 **Bilans serii:** `{data['units_balance']:+.2f}j` | `CZIKATA: {data['pln_balance']:+.2f} PLN`\n"
+                        f"🤖 *Autonomous Value Engine v2.4*"
                     )
                     
                     msg_id = send_telegram_message(initial_message)
@@ -231,7 +236,7 @@ def check_value_bets(data):
             print(f"❌ Wyjątek przy skanowaniu Betclica dla {sport}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Bot Betclic Value 24/7 wystartował...")
+    print("🚀 Bot Betclic Value w klimacie VIP 24/7 wystartował...")
     while True:
         data = load_data()
         check_and_settle_bets(data)
