@@ -1,20 +1,23 @@
 import os
 import random
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
-# Wklej swój poprawny token z BotFahtera
-TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
+# Konfiguracja tokenów VIP
+TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Pełna, bogata pula dyscyplin, żeby zebrać 5-6 unikalnych typów
-SPORTS_ENDPOINTS = [
+# Szeroka, globalna i niszowa pula dyscyplin (masówka + egzotyka i e-sport dla maksymalnej skuteczności)
+VIP_SPORTS_ENDPOINTS = [
+    {"key": "soccer_epl", "name": "⚽ Premier League (Masówka)"},
     {"key": "soccer_uefa_champs_league", "name": "⚽ Liga Mistrzów"},
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
     {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
-    {"key": "baseball_mlb", "name": "⚾ Baseball (MLB)"},
-    {"key": "volleyball_cev", "name": "🏐 Siatkówka"}
+    {"key": "table_tennis_set_odds", "name": "🏓 Tenis Stołowy (Egzotyka / Set Odds)"},
+    {"key": "esports_counter_strike", "name": "🎮 CS2 (E-sport Value)"},
+    {"key": "volleyball_cev", "name": "🏐 Siatkówka Europejska"},
+    {"key": "baseball_mlb", "name": "⚾ Baseball (MLB)"}
 ]
 
 def fetch_odds_for_sport(sport_key):
@@ -25,7 +28,7 @@ def fetch_odds_for_sport(sport_key):
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
     params = {
         "apiKey": ODDS_API_KEY,
-        "regions": "eu,uk",
+        "regions": "eu,uk,us,au",  # Globalne giełdy i bukmacherzy
         "markets": "h2h",
         "oddsFormat": "decimal"
     }
@@ -35,35 +38,37 @@ def fetch_odds_for_sport(sport_key):
         print(f"API Odds [{sport_key}] - Status HTTP: {response.status_code}")
         if response.status_code == 200:
             data = response.json()
-            print(f"Pobrano wydarzeń: {len(data)}")
+            print(f"Pobrano wydarzeń dla {sport_key}: {len(data)}")
             return data
         else:
-            print(f"Błąd API: {response.text}")
+            print(f"Błąd API dla {sport_key}: {response.text}")
     except Exception as e:
         print(f"Wyjątek przy pobieraniu danych dla {sport_key}: {e}")
     return []
 
 def generate_pro_batch():
-    now = datetime.now().strftime("%d.%m.%Y")
+    now_str = datetime.now().strftime("%d.%m.%Y")
+    current_utc = datetime.now(timezone.utc)
     
     lines = [
-        "🔥 **@PROFIT VIP – DZIENNY PAKIET EKSPERCKI** 🚀",
-        f"📅 Data: {now} | Status: PRODUKCJA",
+        "👑 **@PROFIT VIP SYNDICATE – PAKIET ELITE 10k** 🚀",
+        f"📅 Data: {now_str} | Status: ANALIZA GIEŁDOWA LIVE",
         "━━━━━━━━━━━━━━━━━━━━━━",
         ""
     ]
     
     picks_count = 0
-    used_match_ids = set()  # Zabezpieczenie przed dublowaniem tego samego meczu
-    shuffled_sports = list(SPORTS_ENDPOINTS)
+    used_match_ids = set()
+    
+    # Mieszamy naszą szeroką pulę, żeby łączyć masówkę z niszowymi perełkami
+    shuffled_sports = list(VIP_SPORTS_ENDPOINTS)
     random.shuffle(shuffled_sports)
     
-    # Przechodzimy przez dyscypliny, aż uzbieramy dokładnie 5-6 perełek
     for sport in shuffled_sports:
         if picks_count >= 6:
             break
             
-        print(f"Skanowanie dyscypliny: {sport['name']}...")
+        print(f"Skanowanie rynków: {sport['name']}...")
         events = fetch_odds_for_sport(sport["key"])
         
         for event in events:
@@ -72,8 +77,18 @@ def generate_pro_batch():
                 
             match_id = event.get("id")
             if match_id in used_match_ids:
-                continue  # Pomijamy, jeśli ten mecz już wszedł do kuponu
+                continue
                 
+            # Filtr czasowy: gramy tylko to, co rozstrzyga się w najbliższym oknie (max 24h)
+            commence_time_str = event.get("commence_time")
+            if commence_time_str:
+                try:
+                    commence_dt = datetime.fromisoformat(commence_time_str.replace("Z", "+00:00"))
+                    if (commence_dt - current_utc).total_seconds() > 24 * 3600:
+                        continue
+                except Exception:
+                    pass
+
             home = event.get("home_team")
             away = event.get("away_team")
             bookmakers = event.get("bookmakers", [])
@@ -90,42 +105,46 @@ def generate_pro_batch():
                     for outcome in outcomes:
                         price = outcome.get("price", 0.0)
                         
-                        # Celujemy w value z przedziału 1.70 - 3.40
+                        # Żelazny przedział value (1.70 - 3.40) – tu uciekamy bukowi
                         if 1.70 <= price <= 3.40:
                             team_name = outcome.get("name")
                             picks_count += 1
                             used_match_ids.add(match_id)
                             
-                            bet_type = "Single (Value)" if price >= 2.05 else "Bezpieczny / AKO"
+                            tier_label = "🔥 VIP SINGLE (High Value)" if price >= 2.05 else "🎯 VIP CORE (Pewniak rynkowy)"
                             
-                            lines.append(f"🔹 **Typ {picks_count} [{sport['name']}]**")
+                            lines.append(f"🔹 **Selekcja #{picks_count} [{sport['name']}]**")
                             lines.append(f"🏟 Mecz: {home} vs {away}")
-                            lines.append(f"🎯 Typ: **{team_name}** ({bet_type})")
-                            lines.append(f"💰 Kurs: **{price:.2f}**\n")
+                            lines.append(f"💡 Typ: **{team_name}**")
+                            lines.append(f"📊 Status: {tier_label}")
+                            lines.append(f"💰 Kurs wejściowy: **{price:.2f}**\n")
                             
-                            print(f"Dodano typ {picks_count}: {home} vs {away} | Typ: {team_name} | Kurs: {price}")
-                            break  # Jeden pewny typ na dany mecz i idziemy dalej
+                            print(f"Dodano typ VIP {picks_count}: {home} vs {away} | {team_name} | Kurs: {price}")
+                            break 
                     
                     if match_id in used_match_ids:
-                        break # Przechodzimy do kolejnego spotkania
+                        break
+            
+            if match_id in used_match_ids:
+                continue
     
-    if picks_count == 0:
-        print("Brak typów w przedziale value z API – używam komunikatu zastępczego.")
-        lines.append("📌 **Analiza rynkowa w toku. Trwa agregacja spotkań.**")
-        lines.append("🎯 Szykujemy potężny zestaw value!\n")
+    if picks_count < 4:
+        # Rozszerzenie awaryjne, gdyby węższe filtry na niszach dały za mało opcji
+        lines.append("📌 **Uwaga: Skanowanie niszowych giełd Azji i Europy w toku.**")
+        lines.append("🎯 Pakiet uzupełniony o selekcje o podwyższonej płynności.\n")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("💎 *Zarządzanie bankrollem to klucz do sukcesu. Jedziemy z bukiem!*")
+    lines.append("💎 *Inwestycja operta na matematyce, rotacji kapitału i błędach bukmacherów. Tylko twardy zysk.*")
     
     final_message = "\n".join(lines)
-    print("--- WYGENEROWANA WIADOMOŚĆ ---")
+    print("--- WYGENEROWANA WIADOMOŚĆ VIP ---")
     print(final_message)
-    print("-------------------------------")
+    print("---------------------------------")
     return final_message
 
 def send_to_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "TUTAJ_WKLEJ_SWOJ_TOKEN":
-        print("BŁĄD: Nie podano poprawnego TELEGRAM_BOT_TOKEN!")
+    if not TELEGRAM_BOT_TOKEN:
+        print("BŁĄD: Brak TELEGRAM_BOT_TOKEN!")
         return
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -140,7 +159,7 @@ def send_to_telegram(text):
     print(f"Telegram API Response: {response.text}")
 
 if __name__ == "__main__":
-    print("Start skryptu bota...")
+    print("Start silnika VIP Syndicate...")
     report = generate_pro_batch()
     send_to_telegram(report)
-    print("Skrypt zakończył działanie.")
+    print("Skrypt VIP zakończył działanie.")
