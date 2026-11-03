@@ -3,12 +3,12 @@ import random
 import requests
 from datetime import datetime, timezone
 
-# Konfiguracja tokenów VIP
-TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
-TELEGRAM_CHAT_ID = "7221307802"
-ODDS_API_KEY = os.getenv("b95fd2f7f0d055834cc9e277fd154292")
+# Pobieranie konfiguracji ze zmiennych środowiskowych Railway
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Pula dyscyplin z naciskiem na nocne rynki (NBA, NHL, hokej, e-sport)
+# Szeroka, selektywna pula rynków nocnych i globalnych (NBA, NHL, Euroleague, E-sport)
 VIP_SPORTS_ENDPOINTS = [
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
     {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
@@ -19,7 +19,7 @@ VIP_SPORTS_ENDPOINTS = [
 
 def fetch_odds_for_sport(sport_key):
     if not ODDS_API_KEY:
-        print("BŁĄD: Brak klucza ODDS_API_KEY w zmiennych środowiskowych!")
+        print("BŁĄD: Brak klucza ODDS_API_KEY w zmiennych środowiskowych Railway!")
         return []
     
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
@@ -48,7 +48,7 @@ def generate_pro_batch():
     
     lines = [
         "👑 **@PROFIT VIP SYNDICATE – NOCNY PAKIET ELITE** 🚀",
-        f"📅 Data: {now_str} | Status: SKANOWANIE RYNKÓW LIVE",
+        f"📅 Data: {now_str} | Status: PRODUKCJA LIVE",
         "━━━━━━━━━━━━━━━━━━━━━━",
         ""
     ]
@@ -90,13 +90,13 @@ def generate_pro_batch():
                     for outcome in outcomes:
                         price = outcome.get("price", 0.0)
                         
-                        # Elastyczny przedział value dla nocnych perełek
+                        # Żelazny przedział value
                         if 1.70 <= price <= 3.40:
                             team_name = outcome.get("name")
                             picks_count += 1
                             used_match_ids.add(match_id)
                             
-                            # System stawek: 2j (50 zł) dla solidniejszych kursów, 1j (25 zł) dla wyższego value
+                            # System stawek: 2j (50 zł) dla mocnych faworytów, 1j (25 zł) dla value
                             if price < 2.05:
                                 stake_units = "2j"
                                 stake_pln = 50
@@ -122,12 +122,12 @@ def generate_pro_batch():
                 continue
     
     if picks_count == 0:
-        print("Brak typów w przedziale value – dodaję komunikat awaryjny do paczki.")
-        lines.append("📌 **Skanowanie giełd i nisz trwa. Agregujemy kolejne spotkania.**")
+        print("Brak typów w przedziale value – dodaję komunikat awaryjny.")
+        lines.append("📌 **Skanowanie giełd i nisz w toku. Trwa agregacja nocnych spotkań.**")
         lines.append("🎯 Kolejna fala typów już w drodze!\n")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("💎 *Zarządzanie kapitałem: 1j = 25 zł. Gramy chłodną matematikę.*")
+    lines.append("💎 *Zarządzanie kapitałem: 1j = 25 zł, 2j = 50 zł. Gramy chłodną matematikę.*")
     
     final_message = "\n".join(lines)
     print("--- WYGENEROWANA WIADOMOŚĆ VIP ---")
@@ -136,8 +136,8 @@ def generate_pro_batch():
     return final_message
 
 def send_to_telegram(text):
-    if not TELEGRAM_BOT_TOKEN:
-        print("BŁĄD: Brak TELEGRAM_BOT_TOKEN!")
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("BŁĄD: Brak zmiennych TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID w środowisku!")
         return
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -152,7 +152,7 @@ def send_to_telegram(text):
     print(f"Telegram API Response: {response.text}")
 
 if __name__ == "__main__":
-    print("Start silnika VIP Syndicate (Fix Mode)...")
+    print("Start silnika VIP Syndicate...")
     report = generate_pro_batch()
     send_to_telegram(report)
     print("Skrypt VIP zakończył działanie.")
