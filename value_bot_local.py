@@ -3,12 +3,12 @@ import random
 import requests
 from datetime import datetime, timezone
 
-# Pobieranie konfiguracji ze zmiennych środowiskowych Railway
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# Zabezpieczone bezpośrednio w kodzie – zero szans na błąd zmiennych środowiskowych
+TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
+TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Szeroka, selektywna pula rynków nocnych i globalnych (NBA, NHL, Euroleague, E-sport)
+# Pula selektywnych rynków nocnych i globalnych (NBA, NHL, Euroleague, E-sport)
 VIP_SPORTS_ENDPOINTS = [
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
     {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
@@ -137,7 +137,7 @@ def generate_pro_batch():
 
 def send_to_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("BŁĄD: Brak zmiennych TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID w środowisku!")
+        print("BŁĄD: Brak zmiennych TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID!")
         return
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -152,7 +152,7 @@ def send_to_telegram(text):
     print(f"Telegram API Response: {response.text}")
 
 if __name__ == "__main__":
-    print("Start silnika VIP Syndicate...")
+    print("Start silnika VIP Syndicate (Fix Finalny)...")
     report = generate_pro_batch()
     send_to_telegram(report)
     print("Skrypt VIP zakończył działanie.")
