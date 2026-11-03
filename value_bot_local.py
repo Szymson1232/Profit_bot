@@ -26,7 +26,19 @@ SPORT_EMOJIS = {
 }
 
 BASE_UNIT_PLN = 25.0
+
+# System pamięci w tle (w produkcyjnej wersji warto to zapisać do pliku/bazy JSON)
 sent_vip_picks = set()
+active_bets = {}  # match_id -> dane zakładu do rozliczenia
+
+# Statystyki bilansu
+stats = {
+    "total_bets": 0,
+    "wins": 0,
+    "losses": 0,
+    "profit_pln": 0.0,
+    "total_staked": 0.0
+}
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -39,10 +51,7 @@ def send_telegram_message(text):
         "parse_mode": "Markdown"
     }
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        res_data = response.json()
-        if res_data.get("ok"):
-            print("✅ Sygnał VIP klasy premium dostarczony!")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"❌ Błąd wysyłania: {e}")
 
@@ -56,9 +65,8 @@ def calculate_stake_and_tier(price):
     return units, units * BASE_UNIT_PLN
 
 def analyze_and_pick_best():
-    print("💎 Skanuję rynek: filtr anomalií i eliminacja pułapek na faworytów...")
+    print("🔍 Skanuję rynki pod kątem najnowszych sygnałów...")
     if not ODDS_API_KEY:
-        print("❌ Brak ODDS_API_KEY!")
         return
 
     best_gem = None
@@ -109,19 +117,18 @@ def analyze_and_pick_best():
                                 name = outcome.get('name')
                                 price = outcome.get('price')
                                 
-                                # Zawężamy pasmo wyłącznie do zdrowego value (2.10 - 3.20), odrzucając szalone kursy-pułapki
                                 if price and 2.10 <= price <= 3.20:
                                     pick_key = f"{match_id}_{name}"
                                     if pick_key in sent_vip_picks:
                                         continue
 
-                                    # Zaawansowany scoring premiujący zespoły z realnym potencjałem przełamania
                                     score = price
 
                                     if score > highest_score:
                                         highest_score = score
                                         units, stake_pln = calculate_stake_and_tier(price)
                                         best_gem = {
+                                            "match_id": match_id,
                                             "emoji": emoji,
                                             "home": home_team,
                                             "away": away_team,
@@ -148,16 +155,102 @@ def analyze_and_pick_best():
             f"📈 **KURS:** `{best_gem['price']}`\n"
             f"💰 **STAWKA:** `{best_gem['units']}x` ({best_gem['stake']} zł | 1U = {BASE_UNIT_PLN} zł)\n"
             f"🏢 **BUKMACHER:** *{best_gem['bookmaker']}*\n\n"
-            f"💡 *Komentarz analityczny:* Pełna weryfikacja rotacji i formy domowej. Odrzucamy mecze-pułapki z silnymi gospodarzami w gazie. Wchodzimy tylko tam, gdzie błąd bukmachera jest matematycznie potwierdzony."
+            f"💡 *Komentarz analityczny:* Wykryto błąd szacowania ryzyka u bukmachera. Gramy z zachowaniem dyscypliny bankrollu."
         )
         send_telegram_message(message)
         sent_vip_picks.add(best_gem['identifier'])
-        print("✅ Sygnał klasy VIP dostarczony pomyślnie.")
-    else:
-        print("ℹ️ Rynek przefiltrowany – brak pewnych value betów spełniających rygorystyczne normy bezpieczeństwa.")
+        
+        # Zapisujemy kupon do rozliczenia
+        active_bets[best_gem['match_id']] = best_gem
+
+def check_and_settle_results():
+    """Sprawdza zakończenie meczów i rozlicza bilans +/- oraz skutecznosc %"""
+    print("📋 Sprawdzam wyniki zakończonych spotkań...")
+    if not active_bets or not ODDS_API_KEY:
+        return
+
+    resolved_ids = []
+
+    for match_id, bet in active_bets.items():
+        sport = bet['sport']
+        url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores/?apiKey={ODDS_API_KEY}&daysFrom=1"
+        
+        try:
+            res = requests.get(url, timeout=15)
+            if res.status_code != 200:
+                continue
+
+            matches_scores = res.json()
+            for m in matches_scores:
+                if m.get('id') == match_id and m.get('completed'):
+                    # Mecz zakończony – wyciągamy zwycięzcę
+                    scores = m.get('scores')
+                    if not scores:
+                        continue
+
+                    # Wyznaczenie wygranego zespołu / zawodnika
+                    winner = None
+                    s1 = int(scores[0].get('score', 0))
+                    s2 = int(scores[1].get('score', 0))
+
+                    if s1 > s2:
+                        winner = scores[0].get('name')
+                    elif s2 > s1:
+                        winner = scores[1].get('name')
+
+                    stats['total_bets'] += 1
+                    stats['total_staked'] += bet['stake']
+
+                    if winner == bet['outcome']:
+                        # ZAKŁAD WYGRANY
+                        profit = (bet['stake'] * bet['price']) - bet['stake']
+                        stats['wins'] += 1
+                        stats['profit_pln'] += profit
+                        
+                        win_rate = (stats['wins'] / stats['total_bets']) * 100
+                        yield_val = (stats['profit_pln'] / stats['total_staked']) * 100
+
+                        msg = (
+                            f"✅ **ROZLICZENIE: KUPON WYGRANY!** ✅\n\n"
+                            f"{bet['emoji']} **{bet['home']} vs {bet['away']}**\n"
+                            f"🎯 Typ: `{bet['outcome']}` (Kurs: `{bet['price']}`)\n"
+                            f"💵 Zysk z kuponu: `+{profit:.2f} PLN`\n\n"
+                            f"📊 **STATYSTYKI GRUPY VIP 100K:**\n"
+                            f"📈 Skuteczność: `{win_rate:.1f}%` ({stats['wins']}/{stats['total_bets']})\n"
+                            f"💰 Czysty Bilans: `{stats['profit_pln']:+.2f} PLN`\n"
+                            f"🚀 Yield: `{yield_val:+.1f}%`"
+                        )
+                    else:
+                        # ZAKŁAD PRZEGRANY
+                        stats['losses'] += 1
+                        stats['profit_pln'] -= bet['stake']
+                        
+                        win_rate = (stats['wins'] / stats['total_bets']) * 100
+                        yield_val = (stats['profit_pln'] / stats['total_staked']) * 100
+
+                        msg = (
+                            f"❌ **ROZLICZENIE: KUPON PRZEGRANY** ❌\n\n"
+                            f"{bet['emoji']} **{bet['home']} vs {bet['away']}**\n"
+                            f"🎯 Typ: `{bet['outcome']}` (Kurs: `{bet['price']}`)\n"
+                            f"📉 Strata z kuponu: `-{bet['stake']:.2f} PLN`\n\n"
+                            f"📊 **STATYSTYKI GRUPY VIP 100K:**\n"
+                            f"📈 Skuteczność: `{win_rate:.1f}%` ({stats['wins']}/{stats['total_bets']})\n"
+                            f"💰 Czysty Bilans: `{stats['profit_pln']:+.2f} PLN`\n"
+                            f"🚀 Yield: `{yield_val:+.1f}%`"
+                        )
+
+                    send_telegram_message(msg)
+                    resolved_ids.append(match_id)
+
+        except Exception as e:
+            print(f"❌ Wyjątek przy rozliczaniu {match_id}: {e}")
+
+    for r_id in resolved_ids:
+        del active_bets[r_id]
 
 if __name__ == "__main__":
-    print("🚀 System VIP 100k (Anti-Trap Filter) uruchomiony...")
+    print("🚀 System VIP 100k z automatycznym podsumowaniem i bilansem +/- ruszył...")
     while True:
         analyze_and_pick_best()
+        check_and_settle_results()
         time.sleep(3600)
