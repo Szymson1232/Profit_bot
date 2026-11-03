@@ -3,16 +3,18 @@ import random
 import requests
 from datetime import datetime
 
-# Wklej swój poprawny, świeży token z BotFather pomiędzy cudzysłowy:
-TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
+# Wklej swój poprawny token z BotFahtera
+TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Sprawdzone, poprawne klucze sportów z The Odds API
+# Pełna, bogata pula dyscyplin, żeby zebrać 5-6 unikalnych typów
 SPORTS_ENDPOINTS = [
     {"key": "soccer_uefa_champs_league", "name": "⚽ Liga Mistrzów"},
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
-    {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"}
+    {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
+    {"key": "baseball_mlb", "name": "⚾ Baseball (MLB)"},
+    {"key": "volleyball_cev", "name": "🏐 Siatkówka"}
 ]
 
 def fetch_odds_for_sport(sport_key):
@@ -52,19 +54,26 @@ def generate_pro_batch():
     ]
     
     picks_count = 0
+    used_match_ids = set()  # Zabezpieczenie przed dublowaniem tego samego meczu
     shuffled_sports = list(SPORTS_ENDPOINTS)
     random.shuffle(shuffled_sports)
     
+    # Przechodzimy przez dyscypliny, aż uzbieramy dokładnie 5-6 perełek
     for sport in shuffled_sports:
-        if picks_count >= 3:
+        if picks_count >= 6:
             break
             
         print(f"Skanowanie dyscypliny: {sport['name']}...")
         events = fetch_odds_for_sport(sport["key"])
         
-        valid_match_found = False
-        
-        for event in events: 
+        for event in events:
+            if picks_count >= 6:
+                break
+                
+            match_id = event.get("id")
+            if match_id in used_match_ids:
+                continue  # Pomijamy, jeśli ten mecz już wszedł do kuponu
+                
             home = event.get("home_team")
             away = event.get("away_team")
             bookmakers = event.get("bookmakers", [])
@@ -81,9 +90,11 @@ def generate_pro_batch():
                     for outcome in outcomes:
                         price = outcome.get("price", 0.0)
                         
+                        # Celujemy w value z przedziału 1.70 - 3.40
                         if 1.70 <= price <= 3.40:
                             team_name = outcome.get("name")
                             picks_count += 1
+                            used_match_ids.add(match_id)
                             
                             bet_type = "Single (Value)" if price >= 2.05 else "Bezpieczny / AKO"
                             
@@ -92,15 +103,11 @@ def generate_pro_batch():
                             lines.append(f"🎯 Typ: **{team_name}** ({bet_type})")
                             lines.append(f"💰 Kurs: **{price:.2f}**\n")
                             
-                            print(f"Znaleziono typ: {home} vs {away} | Typ: {team_name} | Kurs: {price}")
-                            valid_match_found = True
-                            break 
-                
-                if valid_match_found:
-                    break
-            
-            if valid_match_found:
-                break
+                            print(f"Dodano typ {picks_count}: {home} vs {away} | Typ: {team_name} | Kurs: {price}")
+                            break  # Jeden pewny typ na dany mecz i idziemy dalej
+                    
+                    if match_id in used_match_ids:
+                        break # Przechodzimy do kolejnego spotkania
     
     if picks_count == 0:
         print("Brak typów w przedziale value z API – używam komunikatu zastępczego.")
