@@ -3,10 +3,11 @@ import random
 import requests
 from datetime import datetime
 
-# Stałe konfiguracyjne - Twardo wkodowane dla pewności działania
+# --- TWARDZIZNA: Wszystko bezpośrednio w kodzie, zero błędów ze zmiennymi środowiskowymi ---
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
-ODDS_API_KEY = os.getenv("99e1b40f31bdf20559cb664785d538b8")
+ODDS_API_KEY = "99e1b40f31bdf20559cb664785d538b8"
+
 # Pula selektywnych rynków nocnych i globalnych
 VIP_SPORTS_ENDPOINTS = [
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
@@ -18,7 +19,7 @@ VIP_SPORTS_ENDPOINTS = [
 
 def fetch_odds_for_sport(sport_key):
     if not ODDS_API_KEY:
-        print("BŁĄD: Brak klucza ODDS_API_KEY w zmiennych środowiskowych Railway!")
+        print("BŁĄD: Brak klucza ODDS_API_KEY!")
         return []
     
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
@@ -147,12 +148,12 @@ def send_to_telegram(text):
         print(f"Telegram API Status: {response.status_code}")
         print(f"Telegram API Response: {response.text}")
         if response.status_code != 200:
-            print("WPROWADŹ KOREKTĘ: Upewnij się, że bot jest administratorem na kanale Telegrama!")
+            print("WPROWADŹ KOREKTĘ: Telegram odrzucił token lub bot nie ma uprawnień administratora na kanale!")
     except Exception as e:
         print(f"Wyjątek podczas wysyłania do Telegrama: {e}")
 
 if __name__ == "__main__":
-    print("Start silnika VIP Syndicate (Final Deploy)...")
+    print("Start silnika VIP Syndicate (Final Fix)...")
     report = generate_pro_batch()
     send_to_telegram(report)
     print("Skrypt VIP zakończył działanie.")
