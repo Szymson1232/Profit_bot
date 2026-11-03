@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 # Konfiguracja tokenów VIP
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+ODDS_API_KEY = os.getenv("b95fd2f7f0d055834cc9e277fd154292")
 
 # Pula dyscyplin z naciskiem na nocne rynki (NBA, NHL, hokej, e-sport)
 VIP_SPORTS_ENDPOINTS = [
