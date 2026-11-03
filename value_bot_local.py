@@ -1,14 +1,14 @@
 import os
 import random
 import requests
-from datetime import datetime, timezone
+from datetime import datetime
 
-# Zabezpieczone bezpośrednio w kodzie – zero szans na błąd zmiennych środowiskowych
+# Stałe konfiguracyjne - Twardo wkodowane dla pewności działania
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Pula selektywnych rynków nocnych i globalnych (NBA, NHL, Euroleague, E-sport)
+# Pula selektywnych rynków nocnych i globalnych
 VIP_SPORTS_ENDPOINTS = [
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
     {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
@@ -96,7 +96,7 @@ def generate_pro_batch():
                             picks_count += 1
                             used_match_ids.add(match_id)
                             
-                            # System stawek: 2j (50 zł) dla mocnych faworytów, 1j (25 zł) dla value
+                            # System stawek: 2j (50 zł) dla mocnych kursów, 1j (25 zł) dla value
                             if price < 2.05:
                                 stake_units = "2j"
                                 stake_pln = 50
@@ -136,10 +136,6 @@ def generate_pro_batch():
     return final_message
 
 def send_to_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("BŁĄD: Brak zmiennych TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID!")
-        return
-        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -147,12 +143,17 @@ def send_to_telegram(text):
         "parse_mode": "Markdown"
     }
     
-    response = requests.post(url, json=payload)
-    print(f"Telegram API Status: {response.status_code}")
-    print(f"Telegram API Response: {response.text}")
+    try:
+        response = requests.post(url, json=payload)
+        print(f"Telegram API Status: {response.status_code}")
+        print(f"Telegram API Response: {response.text}")
+        if response.status_code != 200:
+            print("WPROWADŹ KOREKTĘ: Upewnij się, że bot jest administratorem na kanale Telegrama!")
+    except Exception as e:
+        print(f"Wyjątek podczas wysyłania do Telegrama: {e}")
 
 if __name__ == "__main__":
-    print("Start silnika VIP Syndicate (Fix Finalny)...")
+    print("Start silnika VIP Syndicate (Final Deploy)...")
     report = generate_pro_batch()
     send_to_telegram(report)
     print("Skrypt VIP zakończył działanie.")
