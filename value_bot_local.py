@@ -140,7 +140,7 @@ def analyze_and_pick_best():
 
     if best_gem:
         message = (
-            f"🔥 **VIP 100K // WYSELEKWANA PEREŁKA** 🔥\n\n"
+            f"🔥 **VIP 100K // WYSELEKCJONOWANA PEREŁKA** 🔥\n\n"
             f"{best_gem['emoji']} **{best_gem['home']} vs {best_gem['away']}**\n"
             f"⏱ Start: `{best_gem['time']} UTC`\n"
             f"🏆 Dyscyplina: `{best_gem['sport'].upper()}`\n\n"
