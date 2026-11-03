@@ -4,7 +4,7 @@ import requests
 from datetime import datetime
 
 # Wklej swój poprawny, świeży token z BotFather pomiędzy cudzysłowy:
-TELEGRAM_BOT_TOKEN = "TUTAJ_WKLEJ_SWOJ_TOKEN"
+TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
