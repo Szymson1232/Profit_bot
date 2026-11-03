@@ -3,17 +3,16 @@ import random
 import requests
 from datetime import datetime
 
-# Konfiguracja tokenów
-TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
+# Wklej swój poprawny, świeży token z BotFather pomiędzy cudzysłowy:
+TELEGRAM_BOT_TOKEN = "TUTAJ_WKLEJ_SWOJ_TOKEN"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
+# Sprawdzone, poprawne klucze sportów z The Odds API
 SPORTS_ENDPOINTS = [
     {"key": "soccer_uefa_champs_league", "name": "⚽ Liga Mistrzów"},
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
-    {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
-    {"key": "baseball_mlb", "name": "⚾ Baseball (MLB)"},
-    {"key": "volleyball_cev", "name": "🏐 Siatkówka"}
+    {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"}
 ]
 
 def fetch_odds_for_sport(sport_key):
@@ -57,7 +56,7 @@ def generate_pro_batch():
     random.shuffle(shuffled_sports)
     
     for sport in shuffled_sports:
-        if picks_count >= 5:
+        if picks_count >= 3:
             break
             
         print(f"Skanowanie dyscypliny: {sport['name']}...")
@@ -118,8 +117,8 @@ def generate_pro_batch():
     return final_message
 
 def send_to_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("BŁĄD: Brak TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID!")
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "TUTAJ_WKLEJ_SWOJ_TOKEN":
+        print("BŁĄD: Nie podano poprawnego TELEGRAM_BOT_TOKEN!")
         return
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
