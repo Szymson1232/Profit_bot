@@ -6,7 +6,7 @@ from datetime import datetime
 # Stałe konfiguracyjne - Twardo wkodowane dla pewności działania
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
-ODDS_API_KEY = os.getenv("b95fd2f7f0d055834cc9e277fd154292")
+ODDS_API_KEY = os.getenv("99e1b40f31bdf20559cb664785d538b8")
 # Pula selektywnych rynków nocnych i globalnych
 VIP_SPORTS_ENDPOINTS = [
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
