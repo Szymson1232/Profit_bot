@@ -8,7 +8,7 @@ TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
-# Pula dyscyplin z naciskiem na nocne rynki (NBA, NHL, Ameryka, e-sport)
+# Pula dyscyplin z naciskiem na nocne rynki (NBA, NHL, hokej, e-sport)
 VIP_SPORTS_ENDPOINTS = [
     {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
     {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
@@ -45,11 +45,10 @@ def fetch_odds_for_sport(sport_key):
 
 def generate_pro_batch():
     now_str = datetime.now().strftime("%d.%m.%Y")
-    current_utc = datetime.now(timezone.utc)
     
     lines = [
         "👑 **@PROFIT VIP SYNDICATE – NOCNY PAKIET ELITE** 🚀",
-        f"📅 Data: {now_str} | Status: SKANOWANIE NOCNYCH RYNKÓW",
+        f"📅 Data: {now_str} | Status: SKANOWANIE RYNKÓW LIVE",
         "━━━━━━━━━━━━━━━━━━━━━━",
         ""
     ]
@@ -74,3 +73,86 @@ def generate_pro_batch():
             match_id = event.get("id")
             if match_id in used_match_ids:
                 continue
+                
+            home = event.get("home_team")
+            away = event.get("away_team")
+            bookmakers = event.get("bookmakers", [])
+            
+            if not bookmakers:
+                continue
+                
+            markets = bookmakers[0].get("markets", [])
+            for market in markets:
+                if market.get("key") == "h2h":
+                    outcomes = market.get("outcomes", [])
+                    random.shuffle(outcomes)
+                    
+                    for outcome in outcomes:
+                        price = outcome.get("price", 0.0)
+                        
+                        # Elastyczny przedział value dla nocnych perełek
+                        if 1.70 <= price <= 3.40:
+                            team_name = outcome.get("name")
+                            picks_count += 1
+                            used_match_ids.add(match_id)
+                            
+                            # System stawek: 2j (50 zł) dla solidniejszych kursów, 1j (25 zł) dla wyższego value
+                            if price < 2.05:
+                                stake_units = "2j"
+                                stake_pln = 50
+                                tier_label = "🎯 PEWNY KIERUNEK (CORE)"
+                            else:
+                                stake_units = "1j"
+                                stake_pln = 25
+                                tier_label = "🔥 VALUE HUNT (HIGH ODDS)"
+                            
+                            lines.append(f"🔹 **Selekcja #{picks_count} [{sport['name']}]**")
+                            lines.append(f"🏟 Mecz: {home} vs {away}")
+                            lines.append(f"💡 Typ: **{team_name}**")
+                            lines.append(f"📊 Status: {tier_label}")
+                            lines.append(f"💰 Kurs: **{price:.2f}** | Stawka: **{stake_units} ({stake_pln} zł)**\n")
+                            
+                            print(f"Dodano typ VIP {picks_count}: {home} vs {away} | {team_name} | Kurs: {price} | Stawka: {stake_units}")
+                            break 
+                    
+                    if match_id in used_match_ids:
+                        break
+            
+            if match_id in used_match_ids:
+                continue
+    
+    if picks_count == 0:
+        print("Brak typów w przedziale value – dodaję komunikat awaryjny do paczki.")
+        lines.append("📌 **Skanowanie giełd i nisz trwa. Agregujemy kolejne spotkania.**")
+        lines.append("🎯 Kolejna fala typów już w drodze!\n")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("💎 *Zarządzanie kapitałem: 1j = 25 zł. Gramy chłodną matematikę.*")
+    
+    final_message = "\n".join(lines)
+    print("--- WYGENEROWANA WIADOMOŚĆ VIP ---")
+    print(final_message)
+    print("---------------------------------")
+    return final_message
+
+def send_to_telegram(text):
+    if not TELEGRAM_BOT_TOKEN:
+        print("BŁĄD: Brak TELEGRAM_BOT_TOKEN!")
+        return
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    
+    response = requests.post(url, json=payload)
+    print(f"Telegram API Status: {response.status_code}")
+    print(f"Telegram API Response: {response.text}")
+
+if __name__ == "__main__":
+    print("Start silnika VIP Syndicate (Fix Mode)...")
+    report = generate_pro_batch()
+    send_to_telegram(report)
+    print("Skrypt VIP zakończył działanie.")
