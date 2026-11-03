@@ -2,10 +2,9 @@ import random
 import requests
 from datetime import datetime
 
-# --- TWARDZIZNA PRODUKCYJNA ---
-TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
-# Tutaj wpisujesz swoje prywatne ID z Telegrama (np. uzyskane z @userinfobot), żeby bot pisał bezpośrednio do Ciebie:
-TELEGRAM_CHAT_ID = "7221307802" 
+# --- WKLEJ TUTAJ NOWY TOKEN Z BOTFATHERRAEL ---
+TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
+TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = "99e1b40f31bdf20559cb664785d538b8"
 
 VIP_SPORTS_ENDPOINTS = [
@@ -15,6 +14,17 @@ VIP_SPORTS_ENDPOINTS = [
     {"key": "esports_counter_strike", "name": "🎮 CS2 (E-sport Value)"},
     {"key": "soccer_usa_mls", "name": "⚽ MLS / Ameryka Północna"}
 ]
+
+def verify_telegram_token():
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+    try:
+        res = requests.get(url)
+        print(f"Test Tokena Telegrama - Status: {res.status_code}")
+        print(f"Odpowiedź Telegrama: {res.text}")
+        return res.status_code == 200
+    except Exception as e:
+        print(f"Błąd testu tokena: {e}")
+        return False
 
 def fetch_odds_for_sport(sport_key):
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
@@ -26,7 +36,6 @@ def fetch_odds_for_sport(sport_key):
     }
     try:
         response = requests.get(url, params=params)
-        print(f"API Odds [{sport_key}] - Status HTTP: {response.status_code}")
         if response.status_code == 200:
             data = response.json()
             print(f"Pobrano wydarzeń dla {sport_key}: {len(data)}")
@@ -101,6 +110,10 @@ def generate_pro_batch():
     return "\n".join(lines)
 
 def send_to_telegram(text):
+    if not verify_telegram_token():
+        print("KRYTYCZNY BŁĄD: Token Telegrama jest niepoprawny! Wygeneruj nowy u @BotFather.")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -112,7 +125,7 @@ def send_to_telegram(text):
     print(f"Telegram API Response: {response.text}")
 
 if __name__ == "__main__":
-    print("Start silnika VIP Syndicate (Direct Mode)...")
+    print("Start silnika VIP Syndicate...")
     report = generate_pro_batch()
     send_to_telegram(report)
     print("Skrypt VIP zakończył działanie.")
