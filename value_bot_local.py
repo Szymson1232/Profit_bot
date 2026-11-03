@@ -1,9 +1,10 @@
 import os
+import random
 import requests
 from datetime import datetime
 
-# Konfiguracja tokenów bezpośrednio w kodzie
-TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
+# Konfiguracja tokenów
+TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
@@ -52,12 +53,19 @@ def generate_pro_batch():
     ]
     
     picks_count = 0
+    shuffled_sports = list(SPORTS_ENDPOINTS)
+    random.shuffle(shuffled_sports)
     
-    for sport in SPORTS_ENDPOINTS:
+    for sport in shuffled_sports:
+        if picks_count >= 5:
+            break
+            
         print(f"Skanowanie dyscypliny: {sport['name']}...")
         events = fetch_odds_for_sport(sport["key"])
         
-        for event in events[:2]:
+        valid_match_found = False
+        
+        for event in events: 
             home = event.get("home_team")
             away = event.get("away_team")
             bookmakers = event.get("bookmakers", [])
@@ -69,8 +77,11 @@ def generate_pro_batch():
             for market in markets:
                 if market.get("key") == "h2h":
                     outcomes = market.get("outcomes", [])
+                    random.shuffle(outcomes)
+                    
                     for outcome in outcomes:
                         price = outcome.get("price", 0.0)
+                        
                         if 1.70 <= price <= 3.40:
                             team_name = outcome.get("name")
                             picks_count += 1
@@ -82,17 +93,16 @@ def generate_pro_batch():
                             lines.append(f"🎯 Typ: **{team_name}** ({bet_type})")
                             lines.append(f"💰 Kurs: **{price:.2f}**\n")
                             
-                            print(f"Znaleziono typ: {home} vs {away} | Kurs: {price}")
-                            
-                            if picks_count >= 5:
-                                break
-                    if picks_count >= 5:
-                        break
-            if picks_count >= 5:
+                            print(f"Znaleziono typ: {home} vs {away} | Typ: {team_name} | Kurs: {price}")
+                            valid_match_found = True
+                            break 
+                
+                if valid_match_found:
+                    break
+            
+            if valid_match_found:
                 break
-        if picks_count >= 5:
-            break
-
+    
     if picks_count == 0:
         print("Brak typów w przedziale value z API – używam komunikatu zastępczego.")
         lines.append("📌 **Analiza rynkowa w toku. Trwa agregacja spotkań.**")
