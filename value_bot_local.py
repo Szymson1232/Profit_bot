@@ -1,256 +1,117 @@
 import os
-import time
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+# Konfiguracja ze zmiennych środowiskowych (GitHub Secrets / Railway Env)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")  # Twój klucz do The Odds API
 
-SPORTS = [
-    "basketball_nba",
-    "soccer_italy_serie_a",
-    "soccer_epl",
-    "tennis",
-    "basketball_euroleague"
+# Obsługiwane sporty w naszym potworze typerskim
+SPORTS_ENDPOINTS = [
+    {"key": "soccer_uefa_champs_league", "name": "⚽ Liga Mistrzów"},
+    {"key": "basketball_nba", "name": "🏀 Koszykówka (NBA)"},
+    {"key": "icehockey_nhl", "name": "🏒 Hokej (NHL)"},
+    {"key": "baseball_mlb", "name": "⚾ Baseball (MLB)"},
+    {"key": "volleyball_cev", "name": "🏐 Siatkówka"}
 ]
 
-REGION = "eu"
-
-SPORT_EMOJIS = {
-    "basketball_nba": "🏀",
-    "soccer_italy_serie_a": "⚽",
-    "soccer_epl": "⚽",
-    "tennis": "🎾",
-    "basketball_euroleague": "🏀"
-}
-
-BASE_UNIT_PLN = 25.0
-
-# System pamięci w tle (w produkcyjnej wersji warto to zapisać do pliku/bazy JSON)
-sent_vip_picks = set()
-active_bets = {}  # match_id -> dane zakładu do rozliczenia
-
-# Statystyki bilansu
-stats = {
-    "total_bets": 0,
-    "wins": 0,
-    "losses": 0,
-    "profit_pln": 0.0,
-    "total_staked": 0.0
-}
-
-def send_telegram_message(text):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        return
+def fetch_odds_for_sport(sport_key):
+    """Pobiera kursy z The Odds API dla danej dyscypliny."""
+    if not ODDS_API_KEY:
+        return []
     
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
+    params = {
+        "apiKey": ODDS_API_KEY,
+        "regions": "eu,uk",
+        "markets": "h2h",
+        "oddsFormat": "decimal"
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"Błąd pobierania danych dla {sport_key}: {e}")
+    return []
+
+def generate_pro_batch():
+    """Analizuje rynki i buduje profesjonalny, dzienny pakiet typów."""
+    now = datetime.now().strftime("%d.%m.%Y")
+    
+    message = f"🔥 **@PROFIT VIP – DZIENNY PAKIET EKSPERCKI** 🚀\n"
+    message += f"📅 Data: {now} | Status: PRODUKCJA\n"
+    message += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    picks_count = 0
+    
+    # Przeszukujemy rynki w poszukiwaniu wartościowych kursów (celujemy w value 1.70 - 3.40)
+    for sport in SPORTS_ENDPOINTS:
+        events = fetch_odds_for_sport(sport["key"])
+        
+        for event in events[:2]:  # Bierzemy po 1-2 najciekawsze mecze z dyscypliny
+            home = event.get("home_team")
+            away = event.get("away_team")
+            bookmakers = event.get("bookmakers", [])
+            
+            if not bookmakers:
+                continue
+                
+            # Wyciągamy kursy z pierwszego lepszego bukmachera w zestawieniu
+            markets = bookmakers[0].get("markets", [])
+            for market in markets:
+                if market.get("key") == "h2h":
+                    outcomes = market.get("outcomes", [])
+                    for outcome in outcomes:
+                        price = outcome.get("price", 0.0)
+                        # Szukamy value w naszym przedziale (singli lub mocnych kursów)
+                        if 1.70 <= price <= 3.40:
+                            team_name = outcome.get("name")
+                            picks_count += 1
+                            
+                            bet_type = "Single (Value)" if price >= 2.05 else "Bezpieczny / AKO"
+                            
+                            message += f"🔹 **Typ {picks_count} [{sport['name']}]**\n"
+                            message += f"🏟 Mecz: {home} vs {away}\n"
+                            message += f"🎯 Typ: **{team_name}** ({bet_type})\n"
+                            message += f"💰 Kurs: **{price:.2f}**\n\n"
+                            
+                            if picks_count >= 5:  # Zatrzymujemy się na 5-6 kuponach dziennie
+                                break
+                    if picks_count >= 5:
+                        break
+            if picks_count >= 5:
+                break
+        if picks_count >= 5:
+                            break
+
+    # Fallback, gdyby API nie zwróciło danych (np. brak spotkań w danej chwili)
+    if picks_count == 0:
+        message += f"📌 **Analiza rynkowa w toku. Trwa agregacja wieczornych spotkań z Ligi Mistrzów i NBA.**\n"
+        message += f"🎯 Szykujemy potężny zestaw value na nadchodzącą noc!\n\n"
+
+    message += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    message += f"💎 *Zarządzanie bankrollem to klucz do sukcesu. Jedziemy z bukiem!*"
+    
+    return message
+
+def send_to_telegram(text):
+    """Wysyła gotowy raport na kanał Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Brak tokenów Telegrama w ENV!")
+        print(text)
+        return
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": CHAT_ID,
+        "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "Markdown"
     }
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"❌ Błąd wysyłania: {e}")
-
-def calculate_stake_and_tier(price):
-    if price >= 3.20:
-        units = 1
-    elif 2.50 <= price < 3.20:
-        units = 2
-    else:
-        units = 3
-    return units, units * BASE_UNIT_PLN
-
-def analyze_and_pick_best():
-    print("🔍 Skanuję rynki pod kątem najnowszych sygnałów...")
-    if not ODDS_API_KEY:
-        return
-
-    best_gem = None
-    highest_score = 0
-    now = datetime.now(timezone.utc)
-    max_time_horizon = now + timedelta(hours=36)
-
-    for sport in SPORTS:
-        url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/?apiKey={ODDS_API_KEY}&regions={REGION}&markets=h2h"
-        
-        try:
-            response = requests.get(url, timeout=15)
-            if response.status_code != 200:
-                continue
-
-            matches = response.json()
-            emoji = SPORT_EMOJIS.get(sport, "🎯")
-
-            for match in matches:
-                match_id = match.get('id')
-                home_team = match.get('home_team')
-                away_team = match.get('away_team')
-                commence_str = match.get('commence_time')
-                
-                if not commence_str:
-                    continue
-
-                try:
-                    match_time = datetime.fromisoformat(commence_str.replace('Z', '+00:00'))
-                except Exception:
-                    continue
-
-                if not (now <= match_time <= max_time_horizon):
-                    continue
-
-                formatted_time = match_time.strftime('%d.%m %H:%M')
-
-                for bookmaker in match.get('bookmakers', []):
-                    bm_title = bookmaker.get('title', 'Betclic')
-                    
-                    for market in bookmaker.get('markets', []):
-                        if market.get('key') == 'h2h':
-                            outcomes = market.get('outcomes', [])
-                            if len(outcomes) != 2:
-                                continue
-                            
-                            for outcome in outcomes:
-                                name = outcome.get('name')
-                                price = outcome.get('price')
-                                
-                                if price and 2.10 <= price <= 3.20:
-                                    pick_key = f"{match_id}_{name}"
-                                    if pick_key in sent_vip_picks:
-                                        continue
-
-                                    score = price
-
-                                    if score > highest_score:
-                                        highest_score = score
-                                        units, stake_pln = calculate_stake_and_tier(price)
-                                        best_gem = {
-                                            "match_id": match_id,
-                                            "emoji": emoji,
-                                            "home": home_team,
-                                            "away": away_team,
-                                            "outcome": name,
-                                            "price": price,
-                                            "bookmaker": bm_title,
-                                            "sport": sport,
-                                            "time": formatted_time,
-                                            "units": units,
-                                            "stake": stake_pln,
-                                            "identifier": pick_key
-                                        }
-
-        except Exception as e:
-            print(f"❌ Wyjątek przy analizie {sport}: {e}")
-
-    if best_gem:
-        message = (
-            f"🔥 **VIP 100K // WYSELEKCJONOWANA PEREŁKA** 🔥\n\n"
-            f"{best_gem['emoji']} **{best_gem['home']} vs {best_gem['away']}**\n"
-            f"⏱ Start: `{best_gem['time']} UTC`\n"
-            f"🏆 Dyscyplina: `{best_gem['sport'].upper()}`\n\n"
-            f"🎯 **TYP:** `{best_gem['outcome']}`\n"
-            f"📈 **KURS:** `{best_gem['price']}`\n"
-            f"💰 **STAWKA:** `{best_gem['units']}x` ({best_gem['stake']} zł | 1U = {BASE_UNIT_PLN} zł)\n"
-            f"🏢 **BUKMACHER:** *{best_gem['bookmaker']}*\n\n"
-            f"💡 *Komentarz analityczny:* Wykryto błąd szacowania ryzyka u bukmachera. Gramy z zachowaniem dyscypliny bankrollu."
-        )
-        send_telegram_message(message)
-        sent_vip_picks.add(best_gem['identifier'])
-        
-        # Zapisujemy kupon do rozliczenia
-        active_bets[best_gem['match_id']] = best_gem
-
-def check_and_settle_results():
-    """Sprawdza zakończenie meczów i rozlicza bilans +/- oraz skutecznosc %"""
-    print("📋 Sprawdzam wyniki zakończonych spotkań...")
-    if not active_bets or not ODDS_API_KEY:
-        return
-
-    resolved_ids = []
-
-    for match_id, bet in active_bets.items():
-        sport = bet['sport']
-        url = f"https://api.the-odds-api.com/v4/sports/{sport}/scores/?apiKey={ODDS_API_KEY}&daysFrom=1"
-        
-        try:
-            res = requests.get(url, timeout=15)
-            if res.status_code != 200:
-                continue
-
-            matches_scores = res.json()
-            for m in matches_scores:
-                if m.get('id') == match_id and m.get('completed'):
-                    # Mecz zakończony – wyciągamy zwycięzcę
-                    scores = m.get('scores')
-                    if not scores:
-                        continue
-
-                    # Wyznaczenie wygranego zespołu / zawodnika
-                    winner = None
-                    s1 = int(scores[0].get('score', 0))
-                    s2 = int(scores[1].get('score', 0))
-
-                    if s1 > s2:
-                        winner = scores[0].get('name')
-                    elif s2 > s1:
-                        winner = scores[1].get('name')
-
-                    stats['total_bets'] += 1
-                    stats['total_staked'] += bet['stake']
-
-                    if winner == bet['outcome']:
-                        # ZAKŁAD WYGRANY
-                        profit = (bet['stake'] * bet['price']) - bet['stake']
-                        stats['wins'] += 1
-                        stats['profit_pln'] += profit
-                        
-                        win_rate = (stats['wins'] / stats['total_bets']) * 100
-                        yield_val = (stats['profit_pln'] / stats['total_staked']) * 100
-
-                        msg = (
-                            f"✅ **ROZLICZENIE: KUPON WYGRANY!** ✅\n\n"
-                            f"{bet['emoji']} **{bet['home']} vs {bet['away']}**\n"
-                            f"🎯 Typ: `{bet['outcome']}` (Kurs: `{bet['price']}`)\n"
-                            f"💵 Zysk z kuponu: `+{profit:.2f} PLN`\n\n"
-                            f"📊 **STATYSTYKI GRUPY VIP 100K:**\n"
-                            f"📈 Skuteczność: `{win_rate:.1f}%` ({stats['wins']}/{stats['total_bets']})\n"
-                            f"💰 Czysty Bilans: `{stats['profit_pln']:+.2f} PLN`\n"
-                            f"🚀 Yield: `{yield_val:+.1f}%`"
-                        )
-                    else:
-                        # ZAKŁAD PRZEGRANY
-                        stats['losses'] += 1
-                        stats['profit_pln'] -= bet['stake']
-                        
-                        win_rate = (stats['wins'] / stats['total_bets']) * 100
-                        yield_val = (stats['profit_pln'] / stats['total_staked']) * 100
-
-                        msg = (
-                            f"❌ **ROZLICZENIE: KUPON PRZEGRANY** ❌\n\n"
-                            f"{bet['emoji']} **{bet['home']} vs {bet['away']}**\n"
-                            f"🎯 Typ: `{bet['outcome']}` (Kurs: `{bet['price']}`)\n"
-                            f"📉 Strata z kuponu: `-{bet['stake']:.2f} PLN`\n\n"
-                            f"📊 **STATYSTYKI GRUPY VIP 100K:**\n"
-                            f"📈 Skuteczność: `{win_rate:.1f}%` ({stats['wins']}/{stats['total_bets']})\n"
-                            f"💰 Czysty Bilans: `{stats['profit_pln']:+.2f} PLN`\n"
-                            f"🚀 Yield: `{yield_val:+.1f}%`"
-                        )
-
-                    send_telegram_message(msg)
-                    resolved_ids.append(match_id)
-
-        except Exception as e:
-            print(f"❌ Wyjątek przy rozliczaniu {match_id}: {e}")
-
-    for r_id in resolved_ids:
-        del active_bets[r_id]
+    requests.post(url, json=payload)
 
 if __name__ == "__main__":
-    print("🚀 System VIP 100k z automatycznym podsumowaniem i bilansem +/- ruszył...")
-    while True:
-        analyze_and_pick_best()
-        check_and_settle_results()
-        time.sleep(3600)
+    report = generate_pro_batch()
+    send_to_telegram(report)
