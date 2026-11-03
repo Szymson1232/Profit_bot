@@ -2,9 +2,9 @@ import os
 import requests
 from datetime import datetime
 
-# Konfiguracja ze zmiennych środowiskowych
-TELEGRAM_BOT_TOKEN = os.getenv("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
-TELEGRAM_CHAT_ID = os.getenv("7221307802")
+# Konfiguracja tokenów bezpośrednio w kodzie (pewniak na Railway)
+TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
+TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
 SPORTS_ENDPOINTS = [
@@ -87,44 +87,3 @@ def generate_pro_batch():
                             if picks_count >= 5:
                                 break
                     if picks_count >= 5:
-                        break
-            if picks_count >= 5:
-                break
-        if picks_count >= 5:
-            break
-
-    if picks_count == 0:
-        print("Brak typów w przedziale value z API – używam komunikatu zastępczego.")
-        lines.append("📌 **Analiza rynkowa w toku. Trwa agregacja spotkań.**")
-        lines.append("🎯 Szykujemy potężny zestaw value!\n")
-
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("💎 *Zarządzanie bankrollem to klucz do sukcesu. Jedziemy z bukiem!*")
-    
-    final_message = "\n".join(lines)
-    print("--- WYGENEROWANA WIADOMOŚĆ ---")
-    print(final_message)
-    print("-------------------------------")
-    return final_message
-
-def send_to_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("BŁĄD: Brak TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID w ENV!")
-        return
-        
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    
-    response = requests.post(url, json=payload)
-    print(f"Telegram API Status: {response.status_code}")
-    print(f"Telegram API Response: {response.text}")
-
-if __name__ == "__main__":
-    print("Start skryptu bota...")
-    report = generate_pro_batch()
-    send_to_telegram(report)
-    print("Skrypt zakończył działanie.")
