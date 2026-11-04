@@ -34,7 +34,7 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
-ODDS_API_KEY = os.getenv("2c58eda501e23bcc31db2da215d7a89c", "").strip()
+ODDS_API_KEY = os.getenv("77c2e00c9e6d01ea736a7d2c83ed4115", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 SCAN_INTERVAL_SECONDS = env_int("SCAN_INTERVAL_SECONDS", 900, 60)
