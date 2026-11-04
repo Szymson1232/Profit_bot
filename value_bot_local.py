@@ -19,7 +19,7 @@ import requests
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_API = "https://api.telegram.org"
 
-ODDS_API_KEY = "99e1b40f31bdf20559cb664785d538b8"
+ODDS_API_KEY = "77a835d89ec645d039f29255c855843d"
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 
