@@ -2,7 +2,7 @@ import random
 import requests
 from datetime import datetime
 
-# --- PRODUKCJA VIP ---
+# --- PRODUKCJA VIP (OSTATNIA WERSJA) ---
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 ODDS_API_KEY = "99e1b40f31bdf20559cb664785d538b8"
@@ -44,7 +44,7 @@ def generate_pro_batch():
     
     picks_count = 0
     used_match_ids = set()
-    used_teams = set()  # Nowa blokada przed dublowaniem tych samych drużyn w różnych wariantach
+    used_teams = set()
     
     shuffled_sports = list(VIP_SPORTS_ENDPOINTS)
     random.shuffle(shuffled_sports)
@@ -61,27 +61,4 @@ def generate_pro_batch():
                 continue
                 
             home = event.get("home_team")
-            away = event.get("away_team")
-            
-            # Unikamy wrzucania tego samego meczu/drużyny podwójnie w tej samej paczce
-            match_key = f"{home.lower()}_vs_{away.lower()}"
-            if home in used_teams or away in used_teams or match_key in used_match_ids:
-                continue
-                
-            bookmakers = event.get("bookmakers", [])
-            if not bookmakers:
-                continue
-                
-            markets = bookmakers[0].get("markets", [])
-            for market in markets:
-                if market.get("key") == "h2h":
-                    outcomes = market.get("outcomes", [])
-                    random.shuffle(outcomes)
-                    for outcome in outcomes:
-                        price = outcome.get("price", 0.0)
-                        if 1.70 <= price <= 3.40:
-                            team_name = outcome.get("name")
-                            picks_count += 1
-                            used_match_ids.add(match_id)
-                            used_match_ids.add(match_key)
-                            used
+            away
