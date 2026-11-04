@@ -3,9 +3,9 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+TELEGRAM_TOKEN = os.getenv("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
+CHAT_ID = os.getenv("7221307802")
+ODDS_API_KEY = os.getenv("77a835d89ec645d039f29255c855843d")
 
 SPORTS = [
     "basketball_nba",
