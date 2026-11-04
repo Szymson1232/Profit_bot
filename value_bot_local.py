@@ -57,4 +57,23 @@ def generate_pro_batch():
             if picks_count >= 6:
                 break
             match_id = event.get("id")
-            if match
+            if match_id in used_match_ids:
+                continue
+                
+            home = event.get("home_team")
+            away = event.get("away_team")
+            
+            if not home or not away:
+                continue
+            
+            match_key = f"{home.lower()}_vs_{away.lower()}"
+            if home in used_teams or away in used_teams or match_key in used_match_ids:
+                continue
+                
+            bookmakers = event.get("bookmakers", [])
+            if not bookmakers:
+                continue
+                
+            markets = bookmakers[0].get("markets", [])
+            for market in markets:
+                if market.get("key") == "h2h":
