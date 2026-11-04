@@ -19,7 +19,7 @@ import requests
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_API = "https://api.telegram.org"
 
-# --- TWARDZIZNA PRODUKCYJNA (BEZ BŁĘDÓW ŚRODOWISKOWYCH) ---
+# --- TWARDZIZNA PRODUKCYJNA ---
 ODDS_API_KEY = "99e1b40f31bdf20559cb664785d538b8"
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
@@ -159,4 +159,50 @@ def evaluate_event(event: dict[str, Any], sport: dict[str, Any]) -> dict[str, An
 
     candidates = []
     for outcome in names:
-        best_row = max((row for row in rows if outcome in row["prices"]), key=lambda
+        best_row = max((row for row in rows if outcome in row["prices"]), key=lambda r: r["prices"][outcome])
+        probabilities = [row["probabilities"][outcome] for row in rows if outcome in row["probabilities"]]
+        if len(probabilities) < MIN_BOOKMAKERS:
+            continue
+        fair_probability = statistics.median(probabilities)
+        best_odds = best_row["prices"][outcome]
+        implied_probability = 1.0 / best_odds
+        edge_pct = (fair_probability - implied_probability) * 100
+        ev_pct = (fair_probability * best_odds - 1.0) * 100
+        if edge_pct < MIN_EDGE_PCT or ev_pct < MIN_EV_PCT:
+            continue
+        candidates.append({
+            "sport": sport.get("title") or sport.get("key"),
+            "sport_key": sport.get("key"),
+            "event_id": event.get("id"),
+            "home": event.get("home_team", ""),
+            "away": event.get("away_team", ""),
+            "outcome": outcome,
+            "odds": best_odds,
+            "bookmaker": best_row["bookmaker"],
+            "fair_probability": fair_probability,
+            "edge_pct": edge_pct,
+            "ev_pct": ev_pct,
+            "commence_time": start.isoformat(),
+            "minutes_left": minutes_left,
+            "bookmakers_count": len(rows),
+        })
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: (p["ev_pct"], p["edge_pct"]))
+
+
+def selection_key(pick: dict[str, Any]) -> str:
+    return f"{pick['event_id']}|{pick['outcome']}".lower()
+
+
+def filter_new_picks(picks: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    sent = state.setdefault("sent", {})
+    cutoff = now_utc().timestamp() - DEDUP_HOURS * 3600
+    state["sent"] = {k: v for k, v in sent.items() if isinstance(v, (int, float)) and v >= cutoff}
+    new = [p for p in picks if selection_key(p) not in state["sent"]]
+    new.sort(key=lambda p: (p["ev_pct"], p["edge_pct"]), reverse=True)
+    return new[:MAX_PICKS]
+
+
+def fmt_time(value: str) -> str:
+    dt = parse_dt
