@@ -19,7 +19,7 @@ import requests
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_API = "https://api.telegram.org"
 
-ODDS_API_KEY = "77a835d89ec645d039f29255c855843d"  # <--- Pamiętaj o wklejeniu swojego aktualnego klucza API z kredytami!
+ODDS_API_KEY = "77a835d89ec645d039f29255c855843d"  # <--- Upewnij się, że masz tu aktywny klucz z kredytami!
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 
@@ -27,7 +27,7 @@ VIP_HEADER_GIF = "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3ptZ25rdmZtd
 
 SCAN_INTERVAL_SECONDS = 7200   # Co 2 godziny
 ODDS_REGIONS = "eu,us"
-MAX_SPORTS_PER_SCAN = 12       
+MAX_SPORTS_PER_SCAN = 15       
 MAX_PICKS = 3                  
 MAX_DAYS_AHEAD = 1             # Tylko dzisiejsze i jutrzejsze mecze
 MIN_BOOKMAKERS = 2
@@ -100,7 +100,11 @@ def get_active_sports() -> list[dict[str, Any]]:
     if not isinstance(sports, list):
         return []
     active = [s for s in sports if s.get("active") and s.get("key")]
-    priority_keys = ["basketball_nba", "icehockey_nhl", "soccer_usa_mls", "soccer_germany_bundesliga", "esports_counter_strike"]
+    # Zbalansowany priorytet – piłka, e-sport, kosz, hokej
+    priority_keys = [
+        "soccer_germany_bundesliga", "soccer_epl", "esports_counter_strike",
+        "basketball_nba", "icehockey_nhl", "soccer_usa_mls"
+    ]
     sorted_sports = sorted(active, key=lambda x: 0 if x.get("key") in priority_keys else 1)
     return sorted_sports[:MAX_SPORTS_PER_SCAN]
 
@@ -121,7 +125,7 @@ def get_sport_emoji(sport_name: str) -> str:
         return "🏀"
     if "ice hockey" in s or "nhl" in s:
         return "🏒"
-    if "soccer" in s or "mls" in s or "league" in s or "bundesliga" in s:
+    if "soccer" in s or "mls" in s or "league" in s or "bundesliga" in s or "epl" in s:
         return "⚽"
     if "american" in s or "nfl" in s or "ncaaf" in s:
         return "🏈"
@@ -214,17 +218,14 @@ def evaluate_event(event: dict[str, Any], sport: dict[str, Any]) -> dict[str, An
 
 
 def selection_key(pick: dict[str, Any]) -> str:
-    # Unikalny klucz oparty na ID wydarzenia oraz typie, żeby uniknąć duplikatów
     return f"{pick['event_id']}|{pick['outcome']}".lower()
 
 
 def filter_new_picks(picks: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
     sent = state.setdefault("sent", {})
-    cutoff = now_utc().timestamp() - (48 * 3600)  # Pamięć 48h
-    # Czyszczenie przestarzałych wpisów
+    cutoff = now_utc().timestamp() - (72 * 3600)  # Wydłużona pamięć do 72h, zero powtórek
     state["sent"] = {k: v for k, v in sent.items() if isinstance(v, (int, float)) and v >= cutoff}
     
-    # Odrzucamy to, co już zostało wysłane
     new = [p for p in picks if selection_key(p) not in state["sent"]]
     new.sort(key=lambda p: (p["ev_pct"], p["edge_pct"]), reverse=True)
     return new[:MAX_PICKS]
@@ -343,24 +344,23 @@ def scan_once(state: dict[str, Any]) -> None:
     new_picks = filter_new_picks(list(best_by_event.values()), state)
 
     if not new_picks:
-        log.info("Brak nowych unikalnych selekcji na dziś/jutro w tej turze.")
+        log.info("Brak nowych unikalnych selekcji na dziś/jutro w tej turze (chronię przed duplikatami).")
         save_state(state)
         return
 
     message = build_message(new_picks, len(sports))
     send_telegram_broadcast(message)
     
-    # Natychmiast zapisujemy stan do pliku, żeby zablokować duplikaty
     stamp = now_utc().timestamp()
     for pick in new_picks:
         state.setdefault("sent", {})[selection_key(pick)] = stamp
     save_state(state)
     
-    log.info("Wysłano bieżący pakiet VIP na Telegram (%s nowych typów).", len(new_picks))
+    log.info("Wysłano unikalny pakiet VIP na Telegram (%s nowych typów).", len(new_picks))
 
 
 def main() -> None:
-    log.info("Start silnika Profit VIP (Tryb bieżący: co 2 godziny, ochrona przed duplikatami).")
+    log.info("Start silnika Profit VIP (Zabezpieczenie przed podwójnym wysyłaniem).")
     state = load_state()
     
     try:
