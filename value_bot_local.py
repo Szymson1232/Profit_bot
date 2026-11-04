@@ -19,7 +19,7 @@ import requests
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_API = "https://api.telegram.org"
 
-ODDS_API_KEY = "77a835d89ec645d039f29255c855843d"
+ODDS_API_KEY = "99e1b40f31bdf20559cb664785d538b8"  # <--- Pamiętaj o wklejeniu swojego aktualnego klucza API z kredytami!
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 
@@ -64,6 +64,7 @@ def load_state() -> dict[str, Any]:
         if STATE_FILE.exists():
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                log.info("Wczytano stan z pliku: %s zapisanych selekcji.", len(data.get("sent", {})))
                 return data
     except Exception as exc:
         log.warning("Nie udało się odczytać stanu (%s); startuję z pustym.", exc)
@@ -71,10 +72,13 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except Exception as exc:
+        log.error("Błąd zapisu stanu do pliku: %s", exc)
 
 
 def api_get(path: str, params: dict[str, Any] | None = None) -> Any:
@@ -210,13 +214,17 @@ def evaluate_event(event: dict[str, Any], sport: dict[str, Any]) -> dict[str, An
 
 
 def selection_key(pick: dict[str, Any]) -> str:
+    # Unikalny klucz oparty na ID wydarzenia oraz typie, żeby uniknąć duplikatów
     return f"{pick['event_id']}|{pick['outcome']}".lower()
 
 
 def filter_new_picks(picks: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
     sent = state.setdefault("sent", {})
-    cutoff = now_utc().timestamp() - 48 * 3600
+    cutoff = now_utc().timestamp() - (48 * 3600)  # Pamięć 48h
+    # Czyszczenie przestarzałych wpisów
     state["sent"] = {k: v for k, v in sent.items() if isinstance(v, (int, float)) and v >= cutoff}
+    
+    # Odrzucamy to, co już zostało wysłane
     new = [p for p in picks if selection_key(p) not in state["sent"]]
     new.sort(key=lambda p: (p["ev_pct"], p["edge_pct"]), reverse=True)
     return new[:MAX_PICKS]
@@ -341,15 +349,18 @@ def scan_once(state: dict[str, Any]) -> None:
 
     message = build_message(new_picks, len(sports))
     send_telegram_broadcast(message)
+    
+    # Natychmiast zapisujemy stan do pliku, żeby zablokować duplikaty
     stamp = now_utc().timestamp()
     for pick in new_picks:
         state.setdefault("sent", {})[selection_key(pick)] = stamp
     save_state(state)
-    log.info("Wysłano bieżący pakiet VIP na Telegram.")
+    
+    log.info("Wysłano bieżący pakiet VIP na Telegram (%s nowych typów).", len(new_picks))
 
 
 def main() -> None:
-    log.info("Start silnika Profit VIP (Tryb bieżący: co 2 godziny).")
+    log.info("Start silnika Profit VIP (Tryb bieżący: co 2 godziny, ochrona przed duplikatami).")
     state = load_state()
     
     try:
