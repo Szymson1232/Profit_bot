@@ -205,4 +205,29 @@ def filter_new_picks(picks: list[dict[str, Any]], state: dict[str, Any]) -> list
 
 
 def fmt_time(value: str) -> str:
-    dt = parse_dt
+    dt = parse_dt(value)
+    if not dt:
+        return "godzina nieznana"
+    try:
+        return dt.astimezone(ZoneInfo(BOT_TIMEZONE)).strftime("%d.%m, %H:%M")
+    except Exception:
+        return dt.astimezone(timezone.utc).strftime("%d.%m, %H:%M UTC")
+
+
+def fmt_pick(pick: dict[str, Any], number: int) -> str:
+    matchup = f"{pick['home']} – {pick['away']}"
+    return (
+        f"<b>{number}. {escape(matchup)}</b>\n"
+        f"Typ: <b>{escape(pick['outcome'])}</b> | Kurs: <b>{pick['odds']:.2f}</b>\n"
+        f"Bukmacher: {escape(pick['bookmaker'])} | Liga: {escape(str(pick['sport']))}\n"
+        f"Szac. fair: {pick['fair_probability'] * 100:.1f}% | Edge: {pick['edge_pct']:+.2f}% | EV: {pick['ev_pct']:+.2f}%\n"
+        f"Start: {fmt_time(pick['commence_time'])} | Rynek: {pick['bookmakers_count']} bukmacherów"
+    )
+
+
+def make_akos(picks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    akos2, akos3 = [], []
+    for size, target, threshold in ((2, akos2, 2.0), (3, akos3, 3.0)):
+        for combo in itertools.combinations(picks, size):
+            if len({p["event_id"] for p in combo}) != size:
+                continue
