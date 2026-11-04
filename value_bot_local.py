@@ -57,7 +57,4 @@ def generate_pro_batch():
             if picks_count >= 6:
                 break
             match_id = event.get("id")
-            if match_id in used_match_ids:
-                continue
-                
-            home = event.get("
+            if match
