@@ -58,7 +58,7 @@ def send_telegram_message(text):
 def calculate_stake_and_tier(price):
     if price >= 3.20:
         units = 1
-    elif 2.50 <= price < 3.20:
+    elif 1.80 <= price < 3.20:
         units = 2
     else:
         units = 3
