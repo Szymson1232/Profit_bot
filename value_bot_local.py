@@ -23,6 +23,9 @@ ODDS_API_KEY = "99e1b40f31bdf20559cb664785d538b8"
 TELEGRAM_BOT_TOKEN = "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 TELEGRAM_CHAT_ID = "7221307802"
 
+# Profesjonalny GIF powitalny w klimacie VIP / Profit (możesz podmienić na własny link MP4/GIF)
+VIP_HEADER_GIF = "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3ptZ25rdmZtd2VpcXQ1bjF2bm1ocDZpcWw2a3U4ZnY3NHRkZHBhayZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/Lp8kVSwaSuwX9oVusW/giphy.gif"
+
 SCAN_INTERVAL_SECONDS = 900
 ODDS_REGIONS = "eu,us"
 MAX_SPORTS_PER_SCAN = 15
@@ -88,7 +91,6 @@ def get_active_sports() -> list[dict[str, Any]]:
     sports = api_get("/sports/")
     if not isinstance(sports, list):
         return []
-    # Wybieramy wszystko co aktywne – w tym NBA, NHL, MLS i egzotykę
     active = [s for s in sports if s.get("active") and s.get("key")]
     return active[:MAX_SPORTS_PER_SCAN]
 
@@ -101,6 +103,23 @@ def fetch_events(sport_key: str) -> list[dict[str, Any]]:
         "dateFormat": "iso",
     })
     return data if isinstance(data, list) else []
+
+
+def get_sport_emoji(sport_name: str) -> str:
+    s = sport_name.lower()
+    if "basketball" in s or "nba" in s or "euroleague" in s:
+        return "🏀"
+    if "ice hockey" in s or "nhl" in s:
+        return "🏒"
+    if "soccer" in s or "mls" in s or "league" in s:
+        return "⚽"
+    if "american" in s or "nfl" in s or "ncaaf" in s:
+        return "🏈"
+    if "esports" in s or "counter-strike" in s:
+        return "🎮"
+    if "tennis" in s:
+        return "🎾"
+    return "🎯"
 
 
 def bookmaker_market_prices(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -156,7 +175,6 @@ def evaluate_event(event: dict[str, Any], sport: dict[str, Any]) -> dict[str, An
         edge_pct = (fair_probability - implied_probability) * 100
         ev_pct = (fair_probability * best_odds - 1.0) * 100
         
-        # Szeroki przedział kursowy na nocne value (od 1.60 do 3.80)
         if not (1.60 <= best_odds <= 3.80):
             continue
 
@@ -204,14 +222,18 @@ def fmt_time(value: str) -> str:
 
 
 def fmt_pick(pick: dict[str, Any], number: int) -> str:
-    matchup = f"{pick['home']} – {pick['away']}"
+    matchup = f"{pick['home']} vs {pick['away']}"
+    sport_name = str(pick['sport'])
+    emoji = get_sport_emoji(sport_name)
     stake_units = "2j" if pick['odds'] < 2.05 else "1j"
     stake_pln = 50 if pick['odds'] < 2.05 else 25
     return (
-        f"<b>{number}. [{escape(str(pick['sport']))}] {escape(matchup)}</b>\n"
-        f"Typ: <b>{escape(pick['outcome'])}</b> | Kurs: <b>{pick['odds']:.2f}</b>\n"
-        f"Stawka: <b>{stake_units} ({stake_pln} zł)</b> | Buk: {escape(pick['bookmaker'])}\n"
-        f"Model EV: {pick['ev_pct']:+.2f}% | Start: {fmt_time(pick['commence_time'])}"
+        f"<b>{number}. {emoji} [{escape(sport_name)}]</b>\n"
+        f"🏟 <code>{escape(matchup)}</code>\n"
+        f"💡 Typ: <b>{escape(pick['outcome'])}</b> @ <code>{pick['odds']:.2f}</code>\n"
+        f"💸 Stawka: <b>{stake_units} ({stake_pln} zł)</b> | Buk: <i>{escape(pick['bookmaker'])}</i>\n"
+        f"📊 Model EV: <code>{pick['ev_pct']:+.2f}%</code> | ⏱ Start: {fmt_time(pick['commence_time'])}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -232,9 +254,22 @@ def make_akos(picks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[d
     return akos2[:2], akos3[:2]
 
 
-def send_telegram(message: str) -> None:
-    url = f"{TELEGRAM_API}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    response = SESSION.post(url, data={
+def send_telegram_broadcast(message: str) -> None:
+    # Najpierw wysyłamy profesjonalny GIF powitalny VIP
+    gif_url = f"{TELEGRAM_API}/bot{TELEGRAM_BOT_TOKEN}/sendAnimation"
+    try:
+        SESSION.post(gif_url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "animation": VIP_HEADER_GIF,
+            "caption": "👑 <b>PROFIT | ELITE SYNDICATE FEED</b> 🚀",
+            "parse_mode": "HTML"
+        }, timeout=15)
+    except Exception as e:
+        log.warning("Nie udało się wysłać GIF-a, pomijam multimediální nagłówek: %s", e)
+
+    # Następnie wysyłamy pełny raport tekstowy
+    msg_url = f"{TELEGRAM_API}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    response = SESSION.post(msg_url, data={
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
@@ -247,32 +282,33 @@ def send_telegram(message: str) -> None:
 def build_message(picks: list[dict[str, Any]], scanned_sports: int) -> str:
     local_now = now_utc().astimezone(ZoneInfo(BOT_TIMEZONE))
     lines = [
-        "👑 <b>@PROFIT VIP SYNDICATE – NOCNY PAKIET ELITE</b> 🚀",
-        f"📅 {local_now.strftime('%d.%m.%Y %H:%M')} | Skan: NHL, NBA, MLS & Egzotyka",
-        f"Znalezione perełki value: <b>{len(picks)}/{MAX_PICKS}</b>",
+        f"📅 <b>Raport rynkowy:</b> {local_now.strftime('%d.%m.%Y | %H:%M')} (Strefa: Warszawska)",
+        f"🔍 <b>Przeskanowane rynki:</b> {scanned_sports} dyscyplin | Wyselekcjonowano: <b>{len(picks)}/{MAX_PICKS}</b>",
         "━━━━━━━━━━━━━━━━━━━━━━",
         ""
     ]
     lines.extend(fmt_pick(p, i + 1) for i, p in enumerate(picks))
 
     ako2, ako3 = make_akos(picks)
-    lines += ["━━━━━━━━━━━━━━━━━━━━━━", "🔥 <b>KODOM AKO (KOMBINACJE NOCNE)</b>"]
+    lines += ["", "🔥 <b>ELITE AKO COMBOS (KOMBINACJE VALUE)</b>"]
     
     if ako2:
         for combo in ako2:
-            labels = [f"{p['home']}–{p['away']}: {p['outcome']} @{p['odds']:.2f}" for p in combo["picks"]]
-            lines.append(f"• AKO2: " + " + ".join(escape(x) for x in labels) + f" | Kurs łączny: <b>{combo['odds']:.2f}</b>")
+            labels = [f"{p['home']} vs {p['away']}: {p['outcome']} @{p['odds']:.2f}" for p in combo["picks"]]
+            lines.append(f"• <b>AKO2:</b> " + " + ".join(escape(x) for x in labels) + f" | Kurs: <b>{combo['odds']:.2f}</b>")
     else:
-        lines.append("• Brak optymalnego AKO2 w tej turze.")
+        lines.append("• <i>Brak optymalnych kombinacji AKO2 w tej turze.</i>")
 
     if ako3:
         for combo in ako3:
-            labels = [f"{p['home']}–{p['away']}: {p['outcome']} @{p['odds']:.2f}" for p in combo["picks"]]
-            lines.append(f"• AKO3: " + " + ".join(escape(x) for x in labels) + f" | Kurs łączny: <b>{combo['odds']:.2f}</b>")
+            labels = [f"{p['home']} vs {p['away']}: {p['outcome']} @{p['odds']:.2f}" for p in combo["picks"]]
+            lines.append(f"• <b>AKO3:</b> " + " + ".join(escape(x) for x in labels) + f" | Kurs: <b>{combo['odds']:.2f}</b>")
 
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
-        "💎 <i>Zarządzanie kapitałem: 1j = 25 zł, 2j = 50 zł. Gramy chłodną matematykę. Dobranoc!</i>",
+        "💎 <b>Zarządzanie kapitałem (Bankroll):</b>",
+        "• <code>1j = 25 zł</code> | <code>2j = 50 zł</code>",
+        "<i>Profit Syndicate – gramy chłodną matematykę i przewagę rynkową. Powodzenia!</i>",
     ]
     return "\n".join(lines)
 
@@ -305,19 +341,18 @@ def scan_once(state: dict[str, Any]) -> None:
         return
 
     message = build_message(new_picks, len(sports))
-    send_telegram(message)
+    send_telegram_broadcast(message)
     stamp = now_utc().timestamp()
     for pick in new_picks:
         state.setdefault("sent", {})[selection_key(pick)] = stamp
     save_state(state)
-    log.info("Wysłano nocny pakiet na Telegram.")
+    log.info("Wysłano sformatowany pakiet VIP na Telegram.")
 
 
 def main() -> None:
-    log.info("Start silnika VIP (Nocny Pakiet Elite).")
+    log.info("Start silnika Profit VIP (Wersja Wizualna Elite).")
     state = load_state()
     
-    # Natychmiastowy skan nocny przy starcie
     try:
         scan_once(state)
     except Exception:
