@@ -95,14 +95,4 @@ def fetch_market_odds(sport_key: str):
         "oddsformat": "decimal"
     }
     try:
-        response = requests.get(url, params=params, timeout=15)
-        if response.status_code == 200:
-            remaining = response.headers.get("x-requests-remaining", "N/A")
-            print(f"[API] [{sport_key}] OK. Pozostałe zapytania: {remaining}")
-            return response.json()
-        elif response.status_code == 429:
-            print(f"[OSTRZEŻENIE API] Limit zapytań wyczerpany (429). Odpoczywamy...")
-            time.sleep(3600)
-            return []
-        else:
-            # Nie każda liga musi być aktywnie rozgrywana w danym dniu (kod 404/422 to norma
+        response = requests.
