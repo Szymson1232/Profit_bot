@@ -1,31 +1,57 @@
 import os
 import sys
 import time
-import math
 import requests
-from datetime import datetime
 
 # ==========================================
-# KONFIGURACJA WBUDOWANA (PROJEKT VIP)
+# KONFIGURACJA NADHENRYKA (VIP ULTRA)
 # ==========================================
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "2dd63be4b08f78956ef0d1b936b05882").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 
 # Parametry algorytmu Value
-MIN_EDGE_PERCENT = 3.5          # Minimalna wartość value (edge) w % do wysłania alertu
-MAX_ODDS = 4.50                 # Maksymalny kurs (odrzucamy szalone niespodzianki)
-MIN_ODDS = 1.35                 # Minimalny kurs (odrzucamy oczywiste pewniaki z mikroskopijnym value)
-SCAN_INTERVAL_SECONDS = 1800    # Przerwa między skanami (30 minut, żeby oszczędzać limity API)
+MIN_EDGE_PERCENT = 3.0          # Minimalna przewaga (edge) w %
+MAX_ODDS = 5.00                 # Maksymalny kurs (łapiemy też soczyste niespodzianki)
+MIN_ODDS = 1.30                 # Minimalny kurs (odsiewamy drobnice)
+SCAN_INTERVAL_SECONDS = 1200    # Przerwa między pełnymi cyklami (20 minut)
 
-# Sporty do monitorowania (Piłka nożna, Koszykówka, Hokej, Tenis)
+# WSZECHSTRONNY ROSTER SPORTÓW I LIG (NADHENRYK SPECTRUM)
 SPORTS_TO_SCAN = [
-    "soccer_epl",               # Premier League
-    "soccer_spain_la_liga",     # La Liga
-    "soccer_italy_serie_a",     # Serie A
-    "soccer_germany_bundesliga",# Bundesliga
-    "basketball_nba",           # NBA
-    "icehockey_nhl"             # NHL
+    # --- PIŁKA NOŻNA (Global) ---
+    "soccer_epl",                       # Anglia - Premier League
+    "soccer_spain_la_liga",             # Hiszpania - La Liga
+    "soccer_italy_serie_a",             # Włochy - Serie A
+    "soccer_germany_bundesliga",        # Niemcy - Bundesliga
+    "soccer_france_ligue_one",          # Francja - Ligue 1
+    "soccer_uefa_champs_league",        # Liga Mistrzów UEFA
+    "soccer_uefa_europa_league",        # Liga Europy UEFA
+    "soccer_poland_ekstraklasa",        # Polska - Ekstraklasa
+    "soccer_turkey_super_lig",          # Turcja - Super Lig
+    "soccer_netherlands_eredivisie",    # Holandia - Eredivisie
+    "soccer_portugal_primeira_liga",    # Portugalia - Primeira Liga
+    "soccer_efl_champ",                 # Anglia - Championship
+    
+    # --- KOSZYKÓWKA (Global) ---
+    "basketball_nba",                   # USA - NBA
+    "basketball_euroleague",            # Europa - Euroliga
+    "basketball_ncaab",                 # USA - NCAA (uniwersytety)
+    "basketball_spain_acb",             # Hiszpania - ACB
+    
+    # --- HOKEJ NA LODZIE (Global) ---
+    "icehockey_nhl",                    # USA/Kanada - NHL
+    "icehockey_sweden_hockey_league",   # Szwecja - SHL
+    "icehockey_finland_liiga",          # Finlandia - Liiga
+    "icehockey_khl",                    # KHL / Międzynarodowe
+    
+    # --- POZOSTAŁE DYSCYPLINY (Pełne Spektrum) ---
+    "tennis_atp_aus_open",              # Tenis ATP (ogólne/turnieje główne)
+    "tennis_wta_aus_open",              # Tenis WTA
+    "baseball_mlb",                     # Baseball - MLB
+    "americanfootball_nfl",             # Futbol Amerykański - NFL
+    "volleyball_cev_champions_league",  # Siatkówka - Liga Mistrzów
+    "esports_league_of_legends",        # Esport - LoL (LEC/LPL/LCK)
+    "darts_world_championship"          # Dart - PDC / Turnieje
 ]
 
 # Walidacja startowa
@@ -33,7 +59,7 @@ if not ODDS_API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     print("[FATAL ERROR] Brak wymaganych kluczy konfiguracyjnych!")
     sys.exit(1)
 
-print("[INFO] Maszyna VIP do szukania Value Betów została zainicjalizowana pomyślnie.")
+print("[INFO] NADHENRYK został uruchomiony i skanuje całe spektrum rynków...")
 
 
 # ==========================================
@@ -60,7 +86,7 @@ def send_telegram_alert(message: str):
 # MODUŁ POBIERANIA DANYCH Z ODDS API
 # ==========================================
 def fetch_market_odds(sport_key: str):
-    """Pobiera aktualne kursy i rynki dla danej dyscypliny z The Odds API."""
+    """Pobiera aktualne kursy dla dowolnego sportu z The Odds API."""
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
     params = {
         "api_key": ODDS_API_KEY,
@@ -71,20 +97,12 @@ def fetch_market_odds(sport_key: str):
     try:
         response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
-            remaining_requests = response.headers.get("x-requests-remaining", "N/A")
-            print(f"[API] [{sport_key}] Pobrano pomyślnie. Pozostałe zapytania w miesiącu: {remaining_requests}")
+            remaining = response.headers.get("x-requests-remaining", "N/A")
+            print(f"[API] [{sport_key}] OK. Pozostałe zapytania: {remaining}")
             return response.json()
         elif response.status_code == 429:
-            print(f"[OSTRZEŻENIE API] Limit zapytań wyczerpany (429). Czekam dłużej...")
+            print(f"[OSTRZEŻENIE API] Limit zapytań wyczerpany (429). Odpoczywamy...")
             time.sleep(3600)
             return []
         else:
-            print(f"[BŁĄD API] Kod {response.status_code}: {response.text}")
-            return []
-    except Exception as e:
-        print(f"[WYJATEK API] Błąd sieciowy podczas pobierania kursów: {e}")
-        return []
-
-
-# ==========================================
-# ALGORYTMT MATEMATYCZNY (TRUE PRO
+            # Nie każda liga musi być aktywnie rozgrywana w danym dniu (kod 404/422 to norma
