@@ -14,7 +14,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 MIN_EDGE_PERCENT = 3.0          # Minimalna przewaga (edge) w %
 MAX_ODDS = 5.00                 # Maksymalny kurs
 MIN_ODDS = 1.30                 # Minimalny kurs
-SCAN_INTERVAL_SECONDS = 1200    # Przerwa między pełnymi cyklami (20 minut)
+SCAN_INTERVAL_SECONDS = 600     # Skanujemy co 10 minut rynki, ale wysyłamy z limitem!
+MAX_ALERTS_PER_HOUR = 6         # Limit: max 6 propozycji na godzinę
+
+# Pamięć podręczna wysłanych typów, żeby nie spamować tym samym meczem
+sent_bets_cache = set()
+recent_alerts_timestamps = []
 
 # WSZECHSTRONNY ROSTER SPORTÓW I LIG
 SPORTS_TO_SCAN = [
@@ -59,7 +64,7 @@ if not ODDS_API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     print("[FATAL ERROR] Brak wymaganych kluczy konfiguracyjnych!")
     sys.exit(1)
 
-print("[INFO] NADHENRYK został uruchomiony i skanuje całe spektrum rynków...")
+print("[INFO] NADHENRYK z systemem anty-spamowym i limitem godzinowym wystartował...")
 
 
 # ==========================================
@@ -188,7 +193,9 @@ def analyze_events_for_value(events):
                         edge_percent = edge * 100.0
 
                         if edge_percent >= MIN_EDGE_PERCENT:
+                            bet_key = f"{home_team}_{away_team}_{selection}"
                             valuable_bets.append({
+                                "unique_key": bet_key,
                                 "match": f"{home_team} vs {away_team}",
                                 "time": commence_time.replace("T", " ")[:16] if commence_time else "Live/Niedługo",
                                 "bookmaker": bm_title,
@@ -201,49 +208,82 @@ def analyze_events_for_value(events):
     return valuable_bets
 
 
+def can_send_alert():
+    """Sprawdza, czy nie przekroczyliśmy limitu 6 propozycji na ostatnią godzinę."""
+    global recent_alerts_timestamps
+    now = time.time()
+    # Usuwamy wpisy starsze niż 1 godzina (3600 sekund)
+    recent_alerts_timestamps = [t for t in recent_alerts_timestamps if now - t < 3600]
+    
+    if len(recent_alerts_timestamps) < MAX_ALERTS_PER_HOUR:
+        return True
+    return False
+
+
 # ==========================================
 # GŁÓWNA PĘTLA OPERACYJNA NADHENRYKA
 # ==========================================
 def main():
+    global sent_bets_cache, recent_alerts_timestamps
+    
     startup_msg = (
-        "🧬 <b>NADHENRYK VIP - AKTYWNY</b> 🧬\n"
+        "🧬 <b>NADHENRYK VIP - INTELIGENTNY SKANER</b> 🧬\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚡ Skaner wszechstronny uruchomiony!\n"
-        "🎯 Monitorowane: <i>Piłka, Kosz, Hokej, Tenis, Baseball, Siatka, Esport, Dart, NFL</i>\n"
+        "⚡ Skaner anty-spamowy aktywny!\n"
+        "🎯 Limit: <b>Max 6 typów na godzinę</b>\n"
         "📈 Minimalny Edge: <b>&gt;= 3.0%</b>\n"
-        "💰 <i>Polujemy na grube value w całej ofercie rynku!</i>"
+        "💰 <i>Wybieramy tylko absolutne hity rynkowe!</i>"
     )
     send_telegram_alert(startup_msg)
-    print("[INFO] NADHENRYK wystartował pełną mocą.")
+    print("[INFO] NADHENRYK wystartował z kontrolą częstotliwości.")
 
     while True:
         try:
+            all_found_bets = []
+
+            # 1. Zbieramy wszystkie value bety ze wszystkich sportów w tym cyklu
             for sport in SPORTS_TO_SCAN:
                 events = fetch_market_odds(sport)
-                
                 if events:
                     value_bets = analyze_events_for_value(events)
                     for bet in value_bets:
-                        alert_msg = (
-                            f"⚡ <b>NADHENRYK: OKAZJA VALUE</b> ⚡\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🏆 <b>Wydarzenie:</b> {bet['match']}\n"
-                            f"⏰ <b>Start:</b> {bet['time']} UTC\n"
-                            f"🏢 <b>Bukmacher:</b> <code>{bet['bookmaker']}</code>\n"
-                            f"🎯 <b>Typ:</b> <b>{bet['selection']}</b>\n"
-                            f"💰 <b>Kurs rynkowy:</b> <code>{bet['price']}</code>\n"
-                            f"📊 <b>Uczciwy kurs (Fair):</b> <code>{bet['fair_odds']}</code>\n"
-                            f"📈 <b>Przewaga (Edge):</b> 🟢 <b>+{bet['edge']}%</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━"
-                        )
-                        send_telegram_alert(alert_msg)
-                        print(f"[WYNIK] Wykryto value: {bet['match']} | Buk: {bet['bookmaker']} | Edge: +{bet['edge']}%")
-                        time.sleep(1.5)
+                        # Sprawdzamy czy ten konkretny zakład nie był już wysyłany wcześniej
+                        if bet["unique_key"] not in sent_bets_cache:
+                            all_found_bets.append(bet)
+                time.sleep(2)
 
-                time.sleep(3)
+            # 2. Sortujemy znalezione bety po najwyższym Edge (najlepsze okazje na górze)
+            all_found_bets.sort(key=lambda x: x["edge"], reverse=True)
 
-            print(f"\n[INFO] Pełny cykl rynkowy zakończony. Czekam {SCAN_INTERVAL_SECONDS // 60} minut...")
-            time.sleep(SCAN_INTERVAL_SECONDS)
+            # 3. Wysyłamy z zachowaniem limitu godzinowego
+            for bet in all_found_bets:
+                if can_send_alert():
+                    alert_msg = (
+                        f"⚡ <b>NADHENRYK: VIP VALUE BET</b> ⚡\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🏆 <b>Wydarzenie:</b> {bet['match']}\n"
+                        f"⏰ <b>Start:</b> {bet['time']} UTC\n"
+                        f"🏢 <b>Bukmacher:</b> <code>{bet['bookmaker']}</code>\n"
+                        f"🎯 <b>Typ:</b> <b>{bet['selection']}</b>\n"
+                        f"💰 <b>Kurs rynkowy:</b> <code>{bet['price']}</code>\n"
+                        f"📊 <b>Uczciwy kurs (Fair):</b> <code>{bet['fair_odds']}</code>\n"
+                        f"📈 <b>Przewaga (Edge):</b> 🟢 <b>+{bet['edge']}%</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                    send_telegram_alert(alert_msg)
+                    
+                    # Zapisujemy do pamięci podręcznej, żeby nigdy więcej nie wysłać tego samego
+                    sent_bets_cache.add(bet["unique_key"])
+                    recent_alerts_timestamps.append(time.time())
+                    
+                    print(f"[WYSŁANO VIP] {bet['match']} | Buk: {bet['bookmaker']} | Edge: +{bet['edge']}%")
+                    time.sleep(3)
+                else:
+                    print("[INFO] Osiągnięto limit 6 typów na godzinę. Czekamy z kolejnymi...")
+                    break
+
+            print(f"\n[INFO] Cykl zakończony. Czekam 10 minut do kolejnego sprawdzenia rynku...")
+            time.sleep(600)
 
         except KeyboardInterrupt:
             print("\n[STOP] Nadhenryk zatrzymany ręcznie.")
