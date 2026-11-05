@@ -23,7 +23,7 @@ import requests
 # KONFIGURACJA — DANE POBIERANE Z RAILWAY
 # ==========================================
 
-ODDS_API_KEY = os.getenv("77a835d89ec645d039f29255c855843d", "").strip()
+ODDS_API_KEY = os.getenv("2dd63be4b08f78956ef0d1b936b05882", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("7221307802", "").strip()
 
