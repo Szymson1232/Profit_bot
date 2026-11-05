@@ -1,5 +1,8 @@
+
 #!/usr/bin/env python3
-"""Value scanner for The Odds API + Telegram. Runs as a Railway Worker."""
+# PROFIT BOT — VALUE SCANNER
+# Railway Worker
+
 from __future__ import annotations
 
 import itertools
@@ -16,179 +19,306 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-API_BASE = "https://api.the-odds-api.com/v4"
-TELEGRAM_API = "https://api.telegram.org"
-
-
-def env_int(name: str, default: int, minimum: int = 1) -> int:
-    try:
-        return max(minimum, int(os.getenv(name, str(default))))
-    except (TypeError, ValueError):
-        return default
-
-
-def env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-
+# ==========================================
+# KONFIGURACJA — DANE POBIERANE Z RAILWAY
+# ==========================================
 
 ODDS_API_KEY = os.getenv("77a835d89ec645d039f29255c855843d", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("7221307802", "").strip()
-SCAN_INTERVAL_SECONDS = env_int("SCAN_INTERVAL_SECONDS", 900, 60)
-ODDS_REGIONS = os.getenv("ODDS_REGIONS", "eu").strip() or "eu"
-MAX_SPORTS_PER_SCAN = env_int("MAX_SPORTS_PER_SCAN", 10, 1)
-MAX_PICKS = min(6, env_int("MAX_PICKS", 6, 1))
-MIN_BOOKMAKERS = env_int("MIN_BOOKMAKERS", 4, 2)
-MIN_EDGE_PCT = env_float("MIN_EDGE_PCT", 1.0)
-MIN_EV_PCT = env_float("MIN_EV_PCT", 1.0)
-MIN_MINUTES_TO_START = env_int("MIN_MINUTES_TO_START", 20, 0)
-MAX_ODDS_AGE_MINUTES = env_int("MAX_ODDS_AGE_MINUTES", 90, 1)
-DEDUP_HOURS = env_int("DEDUP_HOURS", 48, 1)
+
+SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "900"))
+ODDS_REGIONS = os.getenv("ODDS_REGIONS", "eu")
+MAX_SPORTS_PER_SCAN = int(os.getenv("MAX_SPORTS_PER_SCAN", "10"))
+MAX_PICKS = min(6, int(os.getenv("MAX_PICKS", "6")))
+MIN_BOOKMAKERS = int(os.getenv("MIN_BOOKMAKERS", "4"))
+MIN_EDGE_PCT = float(os.getenv("MIN_EDGE_PCT", "1.0"))
+MIN_EV_PCT = float(os.getenv("MIN_EV_PCT", "1.0"))
+MIN_MINUTES_TO_START = int(os.getenv("MIN_MINUTES_TO_START", "20"))
+MAX_ODDS_AGE_MINUTES = int(os.getenv("MAX_ODDS_AGE_MINUTES", "90"))
+DEDUP_HOURS = int(os.getenv("DEDUP_HOURS", "48"))
+
 BOT_TIMEZONE = os.getenv("BOT_TIMEZONE", "Europe/Warsaw")
-STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
-REQUEST_TIMEOUT = 20
+STATE_FILE = Path("state.json")
+
+API_BASE = "https://api.the-odds-api.com/v4"
+TELEGRAM_API = "https://api.telegram.org"
+TIMEOUT = 20
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
-log = logging.getLogger("value-vip")
-SESSION = requests.Session()
+
+log = logging.getLogger("profit-bot")
+session = requests.Session()
 
 
-def now_utc() -> datetime:
+# ==========================================
+# PODSTAWOWE FUNKCJE
+# ==========================================
+
+def now_utc():
     return datetime.now(timezone.utc)
 
 
-def parse_dt(value: str | None) -> datetime | None:
+def parse_dt(value):
     if not value:
         return None
+
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except ValueError:
+    except (ValueError, AttributeError):
         return None
 
 
-def load_state() -> dict[str, Any]:
+def load_state():
     try:
         if STATE_FILE.exists():
-            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            data = json.loads(
+                STATE_FILE.read_text(encoding="utf-8")
+            )
             if isinstance(data, dict):
                 return data
     except Exception as exc:
-        log.warning("Nie udało się odczytać stanu (%s); startuję z pustym.", exc)
+        log.warning("Błąd odczytu state.json: %s", exc)
+
     return {"sent": {}}
 
 
-def save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+def save_state(state):
+    tmp = STATE_FILE.with_suffix(".tmp")
+
+    tmp.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
     tmp.replace(STATE_FILE)
 
 
-def api_get(path: str, params: dict[str, Any] | None = None) -> Any:
+# ==========================================
+# TELEGRAM
+# ==========================================
+
+def send_telegram(message):
+
+    url = f"{TELEGRAM_API}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    response = session.post(
+        url,
+        data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        },
+        timeout=TIMEOUT
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Telegram HTTP {response.status_code}: "
+            f"{response.text[:250]}"
+        )
+
+    result = response.json()
+
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram API error: {result}")
+
+
+# ==========================================
+# ODDS API
+# ==========================================
+
+def api_get(path, params=None):
+
     query = dict(params or {})
     query["apiKey"] = ODDS_API_KEY
-    response = SESSION.get(f"{API_BASE}{path}", params=query, timeout=REQUEST_TIMEOUT)
+
+    response = session.get(
+        f"{API_BASE}{path}",
+        params=query,
+        timeout=TIMEOUT
+    )
+
     if response.status_code != 200:
-        # Do not log request URL: it contains the API key.
-        detail = response.text[:300].replace("\n", " ")
-        raise RuntimeError(f"The Odds API HTTP {response.status_code}: {detail}")
+        raise RuntimeError(
+            f"Odds API HTTP {response.status_code}: "
+            f"{response.text[:250]}"
+        )
+
     return response.json()
 
 
-def get_active_sports() -> list[dict[str, Any]]:
+def get_active_sports():
+
     sports = api_get("/sports/")
+
     if not isinstance(sports, list):
         return []
-    active = [s for s in sports if s.get("active") and s.get("key")]
-    # Prefer leagues with a recognizable title; API order is retained for stability.
+
+    active = [
+        sport for sport in sports
+        if sport.get("active") and sport.get("key")
+    ]
+
     return active[:MAX_SPORTS_PER_SCAN]
 
 
-def fetch_events(sport_key: str) -> list[dict[str, Any]]:
-    data = api_get(f"/sports/{sport_key}/odds/", {
-        "regions": ODDS_REGIONS,
-        "markets": "h2h",
-        "oddsFormat": "decimal",
-        "dateFormat": "iso",
-    })
+def fetch_events(sport_key):
+
+    data = api_get(
+        f"/sports/{sport_key}/odds/",
+        {
+            "regions": ODDS_REGIONS,
+            "markets": "h2h",
+            "oddsFormat": "decimal",
+            "dateFormat": "iso"
+        }
+    )
+
     return data if isinstance(data, list) else []
 
 
-def bookmaker_market_prices(event: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return valid h2h prices grouped by bookmaker, with bookmaker no-vig probabilities."""
-    rows: list[dict[str, Any]] = []
+# ==========================================
+# ANALIZA KURSÓW
+# ==========================================
+
+def bookmaker_rows(event):
+
+    rows = []
+
     for bookmaker in event.get("bookmakers", []) or []:
+
         for market in bookmaker.get("markets", []) or []:
+
             if market.get("key") != "h2h":
                 continue
-            outcomes = market.get("outcomes", []) or []
+
             prices = {
-                str(o.get("name")): float(o.get("price", 0))
-                for o in outcomes
-                if o.get("name") and isinstance(o.get("price"), (int, float)) and float(o["price"]) > 1.01
+                str(outcome["name"]): float(outcome["price"])
+                for outcome in market.get("outcomes", []) or []
+                if outcome.get("name")
+                and isinstance(outcome.get("price"), (int, float))
+                and float(outcome["price"]) > 1.01
             }
+
             if len(prices) < 2:
                 continue
-            inv = {name: 1.0 / price for name, price in prices.items()}
-            total = sum(inv.values())
+
+            inverse = {
+                name: 1 / price
+                for name, price in prices.items()
+            }
+
+            total = sum(inverse.values())
+
             if total <= 0:
                 continue
+
             rows.append({
-                "bookmaker": bookmaker.get("title") or bookmaker.get("key") or "Bookmaker",
-                "last_update": market.get("last_update") or bookmaker.get("last_update"),
+                "bookmaker": (
+                    bookmaker.get("title")
+                    or bookmaker.get("key")
+                    or "Bookmaker"
+                ),
+                "last_update": (
+                    market.get("last_update")
+                    or bookmaker.get("last_update")
+                ),
                 "prices": prices,
-                "probabilities": {name: value / total for name, value in inv.items()},
+                "probabilities": {
+                    name: value / total
+                    for name, value in inverse.items()
+                }
             })
+
             break
+
     return rows
 
 
-def evaluate_event(event: dict[str, Any], sport: dict[str, Any]) -> dict[str, Any] | None:
+def evaluate_event(event, sport):
+
     start = parse_dt(event.get("commence_time"))
+
     if not start:
         return None
-    minutes_left = (start - now_utc()).total_seconds() / 60
+
+    minutes_left = (
+        start - now_utc()
+    ).total_seconds() / 60
+
     if minutes_left < MIN_MINUTES_TO_START:
         return None
 
-    rows = bookmaker_market_prices(event)
+    rows = bookmaker_rows(event)
+
     if len(rows) < MIN_BOOKMAKERS:
         return None
 
-    newest_updates = [parse_dt(row.get("last_update")) for row in rows]
-    valid_updates = [dt for dt in newest_updates if dt]
-    if valid_updates:
-        age_minutes = (now_utc() - max(valid_updates)).total_seconds() / 60
-        if age_minutes > MAX_ODDS_AGE_MINUTES:
+    updates = [
+        parse_dt(row.get("last_update"))
+        for row in rows
+    ]
+
+    updates = [dt for dt in updates if dt]
+
+    if updates:
+        age = (
+            now_utc() - max(updates)
+        ).total_seconds() / 60
+
+        if age > MAX_ODDS_AGE_MINUTES:
             return None
 
-    names = set.intersection(*(set(row["prices"]) for row in rows))
-    if len(names) < 2:
-        return None
+    common_names = set.intersection(
+        *(set(row["prices"]) for row in rows)
+    )
 
     candidates = []
-    for outcome in names:
-        best_row = max((row for row in rows if outcome in row["prices"]), key=lambda r: r["prices"][outcome])
-        probabilities = [row["probabilities"][outcome] for row in rows if outcome in row["probabilities"]]
+
+    for outcome in common_names:
+
+        probabilities = [
+            row["probabilities"][outcome]
+            for row in rows
+            if outcome in row["probabilities"]
+        ]
+
         if len(probabilities) < MIN_BOOKMAKERS:
             continue
-        fair_probability = statistics.median(probabilities)
+
+        best_row = max(
+            (
+                row for row in rows
+                if outcome in row["prices"]
+            ),
+            key=lambda row: row["prices"][outcome]
+        )
+
         best_odds = best_row["prices"][outcome]
-        implied_probability = 1.0 / best_odds
-        edge_pct = (fair_probability - implied_probability) * 100
-        ev_pct = (fair_probability * best_odds - 1.0) * 100
-        if edge_pct < MIN_EDGE_PCT or ev_pct < MIN_EV_PCT:
+
+        fair_probability = statistics.median(
+            probabilities
+        )
+
+        edge = (
+            fair_probability - 1 / best_odds
+        ) * 100
+
+        ev = (
+            fair_probability * best_odds - 1
+        ) * 100
+
+        if edge < MIN_EDGE_PCT or ev < MIN_EV_PCT:
             continue
+
         candidates.append({
             "sport": sport.get("title") or sport.get("key"),
-            "sport_key": sport.get("key"),
             "event_id": event.get("id"),
             "home": event.get("home_team", ""),
             "away": event.get("away_team", ""),
@@ -196,223 +326,336 @@ def evaluate_event(event: dict[str, Any], sport: dict[str, Any]) -> dict[str, An
             "odds": best_odds,
             "bookmaker": best_row["bookmaker"],
             "fair_probability": fair_probability,
-            "edge_pct": edge_pct,
-            "ev_pct": ev_pct,
+            "edge_pct": edge,
+            "ev_pct": ev,
             "commence_time": start.isoformat(),
-            "minutes_left": minutes_left,
-            "bookmakers_count": len(rows),
+            "bookmakers_count": len(rows)
         })
+
     if not candidates:
         return None
-    # One best selection per event, avoiding correlated duplicates from the same match.
-    return max(candidates, key=lambda p: (p["ev_pct"], p["edge_pct"]))
+
+    return max(
+        candidates,
+        key=lambda pick: pick["ev_pct"]
+    )
 
 
-def selection_key(pick: dict[str, Any]) -> str:
+# ==========================================
+# FORMATOWANIE I AKO
+# ==========================================
+
+def selection_key(pick):
     return f"{pick['event_id']}|{pick['outcome']}".lower()
 
 
-def filter_new_picks(picks: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
-    sent = state.setdefault("sent", {})
-    cutoff = now_utc().timestamp() - DEDUP_HOURS * 3600
-    state["sent"] = {k: v for k, v in sent.items() if isinstance(v, (int, float)) and v >= cutoff}
-    new = [p for p in picks if selection_key(p) not in state["sent"]]
-    new.sort(key=lambda p: (p["ev_pct"], p["edge_pct"]), reverse=True)
-    return new[:MAX_PICKS]
+def fmt_time(value):
 
-
-def fmt_time(value: str) -> str:
     dt = parse_dt(value)
+
     if not dt:
-        return "godzina nieznana"
-    try:
-        return dt.astimezone(ZoneInfo(BOT_TIMEZONE)).strftime("%d.%m, %H:%M")
-    except Exception:
-        return dt.astimezone(timezone.utc).strftime("%d.%m, %H:%M UTC")
+        return "Nieznana"
+
+    return dt.astimezone(
+        ZoneInfo(BOT_TIMEZONE)
+    ).strftime("%d.%m.%Y %H:%M")
 
 
-def fmt_pick(pick: dict[str, Any], number: int) -> str:
-    matchup = f"{pick['home']} – {pick['away']}"
-    return (
-        f"<b>{number}. {escape(matchup)}</b>\n"
-        f"Typ: <b>{escape(pick['outcome'])}</b> | Kurs: <b>{pick['odds']:.2f}</b>\n"
-        f"Bukmacher: {escape(pick['bookmaker'])} | Liga: {escape(str(pick['sport']))}\n"
-        f"Szac. fair: {pick['fair_probability'] * 100:.1f}% | Edge: {pick['edge_pct']:+.2f}% | EV: {pick['ev_pct']:+.2f}%\n"
-        f"Start: {fmt_time(pick['commence_time'])} | Rynek: {pick['bookmakers_count']} bukmacherów"
+def make_akos(picks):
+
+    ako2 = []
+    ako3 = []
+
+    for size, target, threshold in (
+        (2, ako2, 2.0),
+        (3, ako3, 3.0)
+    ):
+
+        for combo in itertools.combinations(picks, size):
+
+            if len({
+                pick["event_id"] for pick in combo
+            }) != size:
+                continue
+
+            odds = 1.0
+            probability = 1.0
+
+            for pick in combo:
+                odds *= pick["odds"]
+                probability *= pick["fair_probability"]
+
+            if odds > threshold:
+
+                target.append({
+                    "picks": combo,
+                    "odds": odds,
+                    "ev_pct": (
+                        probability * odds - 1
+                    ) * 100
+                })
+
+        target.sort(
+            key=lambda item: item["ev_pct"],
+            reverse=True
+        )
+
+    return ako2[:2], ako3[:2]
+
+
+def build_message(picks, scanned_sports):
+
+    local_now = now_utc().astimezone(
+        ZoneInfo(BOT_TIMEZONE)
     )
 
-
-def make_akos(picks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build illustrative AKO combinations from distinct events; EV assumes independence."""
-    akos2, akos3 = [], []
-    for size, target, threshold in ((2, akos2, 2.0), (3, akos3, 3.0)):
-        for combo in itertools.combinations(picks, size):
-            if len({p["event_id"] for p in combo}) != size:
-                continue
-            total_odds = 1.0
-            joint_probability = 1.0
-            for p in combo:
-                total_odds *= p["odds"]
-                joint_probability *= p["fair_probability"]
-            if total_odds > threshold:
-                target.append({"picks": combo, "odds": total_odds, "ev_pct": (joint_probability * total_odds - 1) * 100})
-        target.sort(key=lambda x: (x["ev_pct"], x["odds"]), reverse=True)
-    return akos2[:2], akos3[:2]
-
-
-def send_telegram(message: str) -> None:
-    url = f"{TELEGRAM_API}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    response = SESSION.post(url, data={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }, timeout=REQUEST_TIMEOUT)
-    if response.status_code != 200:
-        raise RuntimeError(f"Telegram HTTP {response.status_code}: {response.text[:300]}")
-    result = response.json()
-    if not result.get("ok"):
-        raise RuntimeError(f"Telegram API error: {result}")
-
-
-def build_message(picks: list[dict[str, Any]], scanned_sports: int) -> str:
-    local_now = now_utc().astimezone(ZoneInfo(BOT_TIMEZONE))
     lines = [
-        "<b>VALUE SCANNER | VIP</b>",
-        f"{local_now.strftime('%d.%m.%Y %H:%M')} | Przeskanowane ligi: {scanned_sports}",
-        f"Znalezione nowe selekcje: <b>{len(picks)}/{MAX_PICKS}</b>",
-        "",
+        "<b>PROFIT-BOT | VALUE SCANNER</b>",
+        f"{local_now.strftime('%d.%m.%Y %H:%M')}",
+        f"Przeskanowane ligi: {scanned_sports}",
+        f"Nowe selekcje: <b>{len(picks)}/{MAX_PICKS}</b>",
+        ""
     ]
-    lines.extend(fmt_pick(p, i + 1) for i, p in enumerate(picks))
 
-    solos_mid = [p for p in picks if 1.80 <= p["odds"] <= 2.00]
-    solos_high = [p for p in picks if p["odds"] > 2.00]
+    for number, pick in enumerate(picks, 1):
+
+        matchup = escape(
+            f"{pick['home']} – {pick['away']}"
+        )
+
+        lines.extend([
+            f"<b>{number}. {matchup}</b>",
+            f"Typ: <b>{escape(pick['outcome'])}</b>",
+            f"Kurs: <b>{pick['odds']:.2f}</b>",
+            f"Bukmacher: {escape(pick['bookmaker'])}",
+            f"Liga: {escape(str(pick['sport']))}",
+            (
+                f"Fair: {pick['fair_probability'] * 100:.1f}%"
+                f" | Edge: {pick['edge_pct']:+.2f}%"
+                f" | EV: {pick['ev_pct']:+.2f}%"
+            ),
+            f"Start: {fmt_time(pick['commence_time'])}",
+            f"Bukmacherów: {pick['bookmakers_count']}",
+            ""
+        ])
+
     ako2, ako3 = make_akos(picks)
-    lines += ["", "<b>SOLO 1.80–2.00</b>"]
-    lines += [f"• {escape(p['home'])} – {escape(p['away'])}: {escape(p['outcome'])} @ {p['odds']:.2f}" for p in solos_mid] or ["Brak kwalifikujących się typów."]
-    lines += ["", "<b>SOLO POWYŻEJ 2.00</b>"]
-    lines += [f"• {escape(p['home'])} – {escape(p['away'])}: {escape(p['outcome'])} @ {p['odds']:.2f}" for p in solos_high] or ["Brak kwalifikujących się typów."]
 
-    for title, combos in (("AKO2 | kurs łączny &gt; 2.00", ako2), ("AKO3 | kurs łączny &gt; 3.00", ako3)):
-        lines += ["", f"<b>{title}</b>"]
+    for title, combos in (
+        ("AKO2", ako2),
+        ("AKO3", ako3)
+    ):
+
+        lines.append(f"<b>{title}</b>")
+
         if not combos:
-            lines.append("Brak kombinacji spełniającej próg.")
-        for combo in combos:
-            labels = [f"{p['home']}–{p['away']}: {p['outcome']} @{p['odds']:.2f}" for p in combo["picks"]]
-            lines.append("• " + " + ".join(escape(x) for x in labels) + f" | Łączny kurs: <b>{combo['odds']:.2f}</b> | modelowe EV AKO: {combo['ev_pct']:+.2f}%")
+            lines.append(
+                "Brak kombinacji spełniającej próg."
+            )
 
-    lines += [
-        "",
-        "<i>Metodologia: estymacja prawdopodobieństwa z mediany no-vig rynku; to skaner rynku, nie niezależny model predykcyjny. EV AKO zakłada niezależność zdarzeń. Kursy mogą się zmienić — sprawdź je przed zagraniem. Brak gwarancji zysku.</i>",
-    ]
+        for combo in combos:
+
+            legs = [
+                (
+                    f"{p['home']}–{p['away']}: "
+                    f"{p['outcome']} @{p['odds']:.2f}"
+                )
+                for p in combo["picks"]
+            ]
+
+            lines.append(
+                "• " + escape(" + ".join(legs))
+                + f" | Kurs: <b>{combo['odds']:.2f}</b>"
+                + f" | Modelowe EV: {combo['ev_pct']:+.2f}%"
+            )
+
+        lines.append("")
+
+    lines.append(
+        "<i>To skaner rynku, nie niezależny model predykcyjny. "
+        "EV AKO zakłada niezależność zdarzeń. Kursy mogą się zmienić. "
+        "Brak gwarancji zysku.</i>"
+    )
+
     return "\n".join(lines)
 
 
-def scan_once(state: dict[str, Any], publish_empty_status: bool = False) -> None:
+# ==========================================
+# SKANOWANIE
+# ==========================================
+
+def scan_once(state):
+
     sports = get_active_sports()
-    log.info("Aktywne ligi dostępne w API: %s; skanuję maksymalnie %s", len(sports), MAX_SPORTS_PER_SCAN)
-    evaluated: list[dict[str, Any]] = []
-    total_events = 0
-    failed_leagues: list[str] = []
+
+    log.info(
+        "Aktywne ligi: %s. Skanuję maksymalnie %s.",
+        len(sports),
+        MAX_SPORTS_PER_SCAN
+    )
+
+    best_by_event = {}
+
     for sport in sports:
+
         try:
             events = fetch_events(sport["key"])
-            total_events += len(events)
-            log.info("%s: %s wydarzeń", sport["key"], len(events))
-            for event in events:
-                pick = evaluate_event(event, sport)
-                if pick:
-                    evaluated.append(pick)
-        except Exception as exc:
-            failed_leagues.append(str(sport.get("key", "unknown")))
-            log.warning("Pominięto ligę %s: %s", sport.get("key"), exc)
 
-    # Keep only one candidate per event and sort by estimated EV.
-    best_by_event: dict[str, dict[str, Any]] = {}
-    for pick in evaluated:
-        event_id = pick["event_id"]
-        if event_id not in best_by_event or pick["ev_pct"] > best_by_event[event_id]["ev_pct"]:
-            best_by_event[event_id] = pick
-    new_picks = filter_new_picks(list(best_by_event.values()), state)
+            log.info(
+                "%s: %s wydarzeń",
+                sport["key"],
+                len(events)
+            )
+
+            for event in events:
+
+                pick = evaluate_event(event, sport)
+
+                if not pick:
+                    continue
+
+                event_id = pick["event_id"]
+
+                if (
+                    event_id not in best_by_event
+                    or pick["ev_pct"]
+                    > best_by_event[event_id]["ev_pct"]
+                ):
+                    best_by_event[event_id] = pick
+
+        except Exception as exc:
+
+            log.warning(
+                "Pominięto ligę %s: %s",
+                sport.get("key"),
+                exc
+            )
+
+    sent = state.setdefault("sent", {})
+
+    cutoff = (
+        now_utc().timestamp()
+        - DEDUP_HOURS * 3600
+    )
+
+    state["sent"] = {
+        key: stamp
+        for key, stamp in sent.items()
+        if isinstance(stamp, (int, float))
+        and stamp >= cutoff
+    }
+
+    new_picks = [
+        pick
+        for pick in best_by_event.values()
+        if selection_key(pick) not in state["sent"]
+    ]
+
+    new_picks.sort(
+        key=lambda pick: (
+            pick["ev_pct"],
+            pick["edge_pct"]
+        ),
+        reverse=True
+    )
+
+    new_picks = new_picks[:MAX_PICKS]
 
     if not new_picks:
-        log.info("Brak nowych selekcji spełniających filtry.")
-        if publish_empty_status:
-            local_now = now_utc().astimezone(ZoneInfo(BOT_TIMEZONE))
-            status = [
-                "<b>VALUE SCANNER | RAPORT STARTOWY</b>",
-                f"{local_now.strftime('%d.%m.%Y %H:%M')} | Skan zakończony",
-                f"Przeskanowane ligi: <b>{len(sports)}</b>",
-                f"Wydarzenia pobrane z API: <b>{total_events}</b>",
-                f"Kandydaci po filtrach: <b>{len(evaluated)}</b>",
-                "<b>Brak nowych selekcji spełniających kryteria.</b>",
-                "Nie publikuję losowych typów — kolejny skan za 15 minut."
-            ]
-            if failed_leagues:
-                status.append("Problemy z ligami: " + ", ".join(escape(x) for x in failed_leagues))
-            send_telegram("\n".join(status))
+
+        log.info(
+            "Brak nowych selekcji spełniających filtry."
+        )
+
         save_state(state)
         return
 
-    message = build_message(new_picks, len(sports))
+    message = build_message(
+        new_picks,
+        len(sports)
+    )
+
     send_telegram(message)
+
     stamp = now_utc().timestamp()
+
     for pick in new_picks:
-        state.setdefault("sent", {})[selection_key(pick)] = stamp
+        state["sent"][selection_key(pick)] = stamp
+
     save_state(state)
-    log.info("Wysłano %s nowych selekcji na Telegram.", len(new_picks))
+
+    log.info(
+        "Wysłano %s selekcji na Telegram.",
+        len(new_picks)
+    )
 
 
-def validate_config() -> None:
-    missing = [name for name, value in (
-        ("ODDS_API_KEY", ODDS_API_KEY),
-        ("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN),
-        ("TELEGRAM_CHAT_ID", TELEGRAM_CHAT_ID),
-    ) if not value]
+# ==========================================
+# WALIDACJA I START
+# ==========================================
+
+def validate_config():
+
+    missing = [
+        name
+        for name, value in (
+            ("ODDS_API_KEY", ODDS_API_KEY),
+            ("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN),
+            ("TELEGRAM_CHAT_ID", TELEGRAM_CHAT_ID)
+        )
+        if not value
+    ]
+
     if missing:
-        raise SystemExit("Brak wymaganych zmiennych środowiskowych: " + ", ".join(missing))
+
+        raise SystemExit(
+            "Brak wymaganych zmiennych środowiskowych: "
+            + ", ".join(missing)
+        )
+
     try:
         ZoneInfo(BOT_TIMEZONE)
     except Exception:
-        raise SystemExit(f"Nieprawidłowa strefa czasowa BOT_TIMEZONE={BOT_TIMEZONE!r}")
+        raise SystemExit(
+            f"Nieprawidłowa strefa czasowa: {BOT_TIMEZONE}"
+        )
 
 
-def main() -> None:
+def main():
+
     validate_config()
-    log.info("Start bota VIP. Interwał=%ss, regiony=%s, max lig=%s, max picków=%s", SCAN_INTERVAL_SECONDS, ODDS_REGIONS, MAX_SPORTS_PER_SCAN, MAX_PICKS)
+
+    # WIADOMOŚĆ TESTOWA — NATYCHMIAST PO STARCIE
+    send_telegram(
+        "<b>PROFIT-BOT URUCHOMIONY! ✅</b>\n\n"
+        "Zmienne środowiskowe działają.\n"
+        "Rozpoczynam skanowanie rynku."
+    )
+
+    log.info(
+        "Bot wystartował. Interwał: %s sekund.",
+        SCAN_INTERVAL_SECONDS
+    )
+
     state = load_state()
 
-    # Wiadomość testowa potwierdza, że Telegram działa, zanim zaczniemy pobierać kursy.
-    local_now = now_utc().astimezone(ZoneInfo(BOT_TIMEZONE))
-    send_telegram(
-        "<b>VALUE SCANNER | BOT URUCHOMIONY</b>\n"
-        f"Start: {local_now.strftime('%d.%m.%Y %H:%M')}\n"
-        f"Interwał skanowania: {SCAN_INTERVAL_SECONDS // 60} min\n"
-        f"Limit selekcji na cykl: {MAX_PICKS}\n"
-        "Połączenie z Telegramem: <b>OK</b>. Rozpoczynam pierwszy skan rynku."
-    )
-    log.info("Wysłano wiadomość startową na Telegram.")
-
-    first_cycle = True
     while True:
+
         started = time.monotonic()
+
         try:
-            scan_once(state, publish_empty_status=first_cycle)
-        except Exception as exc:
-            log.exception("Błąd cyklu skanowania")
-            if first_cycle:
-                try:
-                    send_telegram(
-                        "<b>VALUE SCANNER | BŁĄD PIERWSZEGO SKANU</b>\n"
-                        f"Telegram działa, ale pobranie danych lub analiza nie powiodły się.\n"
-                        f"Szczegóły: <code>{escape(str(exc)[:700])}</code>\n"
-                        "Sprawdź logi Railway. Nie wygenerowano fikcyjnych typów."
-                    )
-                except Exception:
-                    log.exception("Nie udało się wysłać raportu błędu na Telegram.")
-        first_cycle = False
+            scan_once(state)
+
+        except Exception:
+            log.exception(
+                "Błąd cyklu skanowania."
+            )
+
         elapsed = time.monotonic() - started
-        time.sleep(max(5, SCAN_INTERVAL_SECONDS - elapsed))
+
+        time.sleep(
+            max(5, SCAN_INTERVAL_SECONDS - elapsed)
+        )
 
 
 if __name__ == "__main__":
