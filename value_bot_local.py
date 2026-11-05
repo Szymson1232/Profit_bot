@@ -12,46 +12,46 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 
 # Parametry algorytmu Value
 MIN_EDGE_PERCENT = 3.0          # Minimalna przewaga (edge) w %
-MAX_ODDS = 5.00                 # Maksymalny kurs (łapiemy też soczyste niespodzianki)
-MIN_ODDS = 1.30                 # Minimalny kurs (odsiewamy drobnice)
+MAX_ODDS = 5.00                 # Maksymalny kurs
+MIN_ODDS = 1.30                 # Minimalny kurs
 SCAN_INTERVAL_SECONDS = 1200    # Przerwa między pełnymi cyklami (20 minut)
 
-# WSZECHSTRONNY ROSTER SPORTÓW I LIG (NADHENRYK SPECTRUM)
+# WSZECHSTRONNY ROSTER SPORTÓW I LIG
 SPORTS_TO_SCAN = [
-    # --- PIŁKA NOŻNA (Global) ---
-    "soccer_epl",                       # Anglia - Premier League
-    "soccer_spain_la_liga",             # Hiszpania - La Liga
-    "soccer_italy_serie_a",             # Włochy - Serie A
-    "soccer_germany_bundesliga",        # Niemcy - Bundesliga
-    "soccer_france_ligue_one",          # Francja - Ligue 1
-    "soccer_uefa_champs_league",        # Liga Mistrzów UEFA
-    "soccer_uefa_europa_league",        # Liga Europy UEFA
-    "soccer_poland_ekstraklasa",        # Polska - Ekstraklasa
-    "soccer_turkey_super_lig",          # Turcja - Super Lig
-    "soccer_netherlands_eredivisie",    # Holandia - Eredivisie
-    "soccer_portugal_primeira_liga",    # Portugalia - Primeira Liga
-    "soccer_efl_champ",                 # Anglia - Championship
+    # --- PIŁKA NOŻNA ---
+    "soccer_epl",                       
+    "soccer_spain_la_liga",             
+    "soccer_italy_serie_a",             
+    "soccer_germany_bundesliga",        
+    "soccer_france_ligue_one",          
+    "soccer_uefa_champs_league",        
+    "soccer_uefa_europa_league",        
+    "soccer_poland_ekstraklasa",        
+    "soccer_turkey_super_lig",          
+    "soccer_netherlands_eredivisie",    
+    "soccer_portugal_primeira_liga",    
+    "soccer_efl_champ",                 
     
-    # --- KOSZYKÓWKA (Global) ---
-    "basketball_nba",                   # USA - NBA
-    "basketball_euroleague",            # Europa - Euroliga
-    "basketball_ncaab",                 # USA - NCAA (uniwersytety)
-    "basketball_spain_acb",             # Hiszpania - ACB
+    # --- KOSZYKÓWKA ---
+    "basketball_nba",                   
+    "basketball_euroleague",            
+    "basketball_ncaab",                 
+    "basketball_spain_acb",             
     
-    # --- HOKEJ NA LODZIE (Global) ---
-    "icehockey_nhl",                    # USA/Kanada - NHL
-    "icehockey_sweden_hockey_league",   # Szwecja - SHL
-    "icehockey_finland_liiga",          # Finlandia - Liiga
-    "icehockey_khl",                    # KHL / Międzynarodowe
+    # --- HOKEJ NA LODZIE ---
+    "icehockey_nhl",                    
+    "icehockey_sweden_hockey_league",   
+    "icehockey_finland_liiga",          
+    "icehockey_khl",                    
     
-    # --- POZOSTAŁE DYSCYPLINY (Pełne Spektrum) ---
-    "tennis_atp_aus_open",              # Tenis ATP (ogólne/turnieje główne)
-    "tennis_wta_aus_open",              # Tenis WTA
-    "baseball_mlb",                     # Baseball - MLB
-    "americanfootball_nfl",             # Futbol Amerykański - NFL
-    "volleyball_cev_champions_league",  # Siatkówka - Liga Mistrzów
-    "esports_league_of_legends",        # Esport - LoL (LEC/LPL/LCK)
-    "darts_world_championship"          # Dart - PDC / Turnieje
+    # --- POZOSTAŁE ---
+    "tennis_atp_aus_open",              
+    "tennis_wta_aus_open",              
+    "baseball_mlb",                     
+    "americanfootball_nfl",             
+    "volleyball_cev_champions_league",  
+    "esports_league_of_legends",        
+    "darts_world_championship"          
 ]
 
 # Walidacja startowa
@@ -95,4 +95,163 @@ def fetch_market_odds(sport_key: str):
         "oddsformat": "decimal"
     }
     try:
-        response = requests.
+        response = requests.get(url, params=params, timeout=15)
+        if response.status_code == 200:
+            remaining = response.headers.get("x-requests-remaining", "N/A")
+            print(f"[API] [{sport_key}] OK. Pozostałe zapytania: {remaining}")
+            return response.json()
+        elif response.status_code == 429:
+            print(f"[OSTRZEŻENIE API] Limit zapytań wyczerpany (429). Odpoczywamy...")
+            time.sleep(3600)
+            return []
+        else:
+            return []
+    except Exception as e:
+        print(f"[WYJATEK API] Błąd sieciowy dla {sport_key}: {e}")
+        return []
+
+
+# ==========================================
+# ALGORYTM MATEMATYCZNY (FAIR CONSENSUS)
+# ==========================================
+def calculate_true_probabilities(bookmakers):
+    """Usuwa marżę bukmacherską i wyznacza obiektywne prawdopodobieństwo rynkowe."""
+    all_implied_probs = []
+    
+    for bm in bookmakers:
+        for market in bm.get("markets", []):
+            if market.get("key") == "h2h":
+                outcomes = market.get("outcomes", [])
+                bm_probs = {}
+                sum_prob = 0
+                for out in outcomes:
+                    price = out.get("price")
+                    if price and price > 1.0:
+                        p = 1.0 / price
+                        bm_probs[out.get("name")] = p
+                        sum_prob += p
+                
+                if sum_prob > 1.0:
+                    for name in bm_probs:
+                        bm_probs[name] /= sum_prob
+                    all_implied_probs.append(bm_probs)
+
+    if not all_implied_probs:
+        return {}
+
+    market_consensus = {}
+    keys = all_implied_probs[0].keys()
+    for key in keys:
+        values = [bp.get(key, 0) for bp in all_implied_probs if key in bp]
+        if values:
+            market_consensus[key] = sum(values) / len(values)
+
+    return market_consensus
+
+
+def analyze_events_for_value(events):
+    """Przeszukuje wydarzenia w poszukiwaniu odchyłek kursowych."""
+    valuable_bets = []
+
+    for event in events:
+        home_team = event.get("home_team", "Gospodarz")
+        away_team = event.get("away_team", "Gość")
+        commence_time = event.get("commence_time", "")
+        bookmakers = event.get("bookmakers", [])
+
+        if not bookmakers:
+            continue
+
+        true_probs = calculate_true_probabilities(bookmakers)
+        if not true_probs:
+            continue
+
+        for bm in bookmakers:
+            bm_title = bm.get("title")
+            for market in bm.get("markets", []):
+                if market.get("key") == "h2h":
+                    for outcome in market.get("outcomes", []):
+                        selection = outcome.get("name")
+                        price = outcome.get("price")
+
+                        if not price or not selection:
+                            continue
+
+                        if not (MIN_ODDS <= price <= MAX_ODDS):
+                            continue
+
+                        fair_prob = true_probs.get(selection, 0)
+                        if fair_prob <= 0:
+                            continue
+
+                        edge = (fair_prob * price) - 1.0
+                        edge_percent = edge * 100.0
+
+                        if edge_percent >= MIN_EDGE_PERCENT:
+                            valuable_bets.append({
+                                "match": f"{home_team} vs {away_team}",
+                                "time": commence_time.replace("T", " ")[:16] if commence_time else "Live/Niedługo",
+                                "bookmaker": bm_title,
+                                "selection": selection,
+                                "price": price,
+                                "fair_odds": round(1.0 / fair_prob, 2),
+                                "edge": round(edge_percent, 2)
+                            })
+
+    return valuable_bets
+
+
+# ==========================================
+# GŁÓWNA PĘTLA OPERACYJNA NADHENRYKA
+# ==========================================
+def main():
+    startup_msg = (
+        "🧬 <b>NADHENRYK VIP - AKTYWNY</b> 🧬\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ Skaner wszechstronny uruchomiony!\n"
+        "🎯 Monitorowane: <i>Piłka, Kosz, Hokej, Tenis, Baseball, Siatka, Esport, Dart, NFL</i>\n"
+        "📈 Minimalny Edge: <b>&gt;= 3.0%</b>\n"
+        "💰 <i>Polujemy na grube value w całej ofercie rynku!</i>"
+    )
+    send_telegram_alert(startup_msg)
+    print("[INFO] NADHENRYK wystartował pełną mocą.")
+
+    while True:
+        try:
+            for sport in SPORTS_TO_SCAN:
+                events = fetch_market_odds(sport)
+                
+                if events:
+                    value_bets = analyze_events_for_value(events)
+                    for bet in value_bets:
+                        alert_msg = (
+                            f"⚡ <b>NADHENRYK: OKAZJA VALUE</b> ⚡\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🏆 <b>Wydarzenie:</b> {bet['match']}\n"
+                            f"⏰ <b>Start:</b> {bet['time']} UTC\n"
+                            f"🏢 <b>Bukmacher:</b> <code>{bet['bookmaker']}</code>\n"
+                            f"🎯 <b>Typ:</b> <b>{bet['selection']}</b>\n"
+                            f"💰 <b>Kurs rynkowy:</b> <code>{bet['price']}</code>\n"
+                            f"📊 <b>Uczciwy kurs (Fair):</b> <code>{bet['fair_odds']}</code>\n"
+                            f"📈 <b>Przewaga (Edge):</b> 🟢 <b>+{bet['edge']}%</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        send_telegram_alert(alert_msg)
+                        print(f"[WYNIK] Wykryto value: {bet['match']} | Buk: {bet['bookmaker']} | Edge: +{bet['edge']}%")
+                        time.sleep(1.5)
+
+                time.sleep(3)
+
+            print(f"\n[INFO] Pełny cykl rynkowy zakończony. Czekam {SCAN_INTERVAL_SECONDS // 60} minut...")
+            time.sleep(SCAN_INTERVAL_SECONDS)
+
+        except KeyboardInterrupt:
+            print("\n[STOP] Nadhenryk zatrzymany ręcznie.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"[BŁĄD KRYTYCZNY NADHENRYKA]: {e}")
+            time.sleep(60)
+
+
+if __name__ == "__main__":
+    main()
