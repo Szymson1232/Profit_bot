@@ -74,3 +74,12 @@ def fetch_market_odds(sport_key: str):
         elif response.status_code == 429:
             time.sleep(3600)
             return []
+        else:
+            return []
+    except Exception as e:
+        print(f"[WYJATEK API dla {sport_key}]: {e}")
+        return []
+
+
+def calculate_true_probabilities(bookmakers):
+    all
