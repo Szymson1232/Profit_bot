@@ -14,7 +14,7 @@ missing_vars = []
 if not ODDS_API_KEY:
     missing_vars.append("2dd63be4b08f78956ef0d1b936b05882")
 if not TELEGRAM_BOT_TOKEN:
-    missing_vars.append("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo)
+    missing_vars.append("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 if not TELEGRAM_CHAT_ID:
     missing_vars.append("7221307802")
 
