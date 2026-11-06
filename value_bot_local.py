@@ -1,12 +1,13 @@
 import os
 import sys
 import time
+from datetime import datetime, timezone
 import requests
 
 # ==========================================
-# KOREAŃSKI MÓZG OPERACYJNY - CLEAN PRO VIP
+# KOREAŃSKI MÓZG OPERACYJNY - FRESH AKO & SOLO
 # ==========================================
-ODDS_API_KEY = os.getenv("ODDS_API_KEY", "4558312e0213918b077bdb2ca60199c4").strip()
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "2dd63be4b08f78956ef0d1b936b05882").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 
@@ -23,7 +24,9 @@ AKO_LEG_MAX_ODDS = 1.60
 
 UNIT_VALUE_PLN = 25.0
 
-# Pamięć podręczna blokująca duplikaty i spam
+# Kluczowy filtr: bierzemy pod uwagę tylko mecze w ciągu najbliższych 48 godzin!
+MAX_HOURS_AHEAD = 48 
+
 sent_match_cache = set()
 recent_alerts_timestamps = []
 
@@ -38,7 +41,7 @@ if not ODDS_API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     print("[FATAL ERROR] Brak wymaganych kluczy konfiguracyjnych!")
     sys.exit(1)
 
-print("[INFO] KOREAN OPERATIONAL BRAIN: Start bez spamu i powitalnych śmieci...")
+print("[INFO] KOREAN OPERATIONAL BRAIN: Filtr czasu (max 48h) aktywny...")
 
 
 def send_telegram_alert(message: str):
@@ -129,6 +132,7 @@ def calculate_smart_stake(edge_percent, bet_type="solo"):
 def analyze_events(events):
     solos = []
     ako_candidates = []
+    now_dt = datetime.now(timezone.utc)
 
     for event in events:
         home_team = event.get("home_team", "Gospodarz")
@@ -136,7 +140,17 @@ def analyze_events(events):
         commence_time = event.get("commence_time", "")
         bookmakers = event.get("bookmakers", [])
 
-        if not bookmakers:
+        if not bookmakers or not commence_time:
+            continue
+
+        # FILTR CZASOWY: Odrzucamy mecze za więcej niż 48h lub historyczne
+        try:
+            clean_time = commence_time.replace("Z", "+00:00")
+            event_dt = datetime.fromisoformat(clean_time)
+            hours_diff = (event_dt - now_dt).total_seconds() / 3600
+            if hours_diff < 0 or hours_diff > MAX_HOURS_AHEAD:
+                continue
+        except Exception:
             continue
 
         true_probs = calculate_true_probabilities(bookmakers)
@@ -167,7 +181,7 @@ def analyze_events(events):
                             solos.append({
                                 "id": unique_id,
                                 "match": match_name,
-                                "time": commence_time.replace("T", " ")[:16] if commence_time else "Live",
+                                "time": commence_time.replace("T", " ")[:16],
                                 "bookmaker": bm_title,
                                 "selection": selection,
                                 "price": price,
@@ -195,14 +209,11 @@ def can_send_alert():
 
 def main():
     global sent_match_cache, recent_alerts_timestamps
-    
-    # Usunięto denerwujący spam powitalny na Telegramie. 
-    # Teraz bot rusza całkowicie cicho i profesjonalnie.
-    print("[INFO] Koreański Mózg Operacyjny wszedł w tryb ciągłego skanowania rynków...")
+    print("[INFO] Koreański Mózg Operacyjny ruszył z filtrem świeżych meczów (max 48h)...")
 
     while True:
         try:
-            print("\n[CYKL] Skanowanie globalne w toku...")
+            print("\n[CYKL] Skanowanie rynków (najbliższe 48h)...")
             all_solos = []
             all_ako_legs = []
 
@@ -214,7 +225,7 @@ def main():
                     all_ako_legs.extend(ako_legs)
                 time.sleep(0.5)
 
-            # Wysyłka SOLO (tylko unikalne)
+            # Wysyłka SOLO
             all_solos.sort(key=lambda x: x["edge"], reverse=True)
             for bet in all_solos:
                 if bet["id"] in sent_match_cache:
@@ -225,7 +236,7 @@ def main():
                     unit_icons = "🟢" * units + "⚪" * (3 - units)
 
                     alert_msg = (
-                        f"🔥 <b>SOLO VIP PICK</b> 🔥\n"
+                        f"🔥 <b>SOLO VIP PICK (Najbliższe 48h)</b> 🔥\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"🏆 <b>Mecz:</b> {bet['match']}\n"
                         f"⏰ <b>Start:</b> {bet['time']} UTC\n"
@@ -243,7 +254,7 @@ def main():
                     time.sleep(2)
                     break
 
-            # Wysyłka AKO (tylko unikalne)
+            # Wysyłka AKO
             if len(all_ako_legs) >= 2 and can_send_alert():
                 unique_ako = []
                 seen_ako_matches = set()
@@ -263,7 +274,7 @@ def main():
                         unit_icons = "🟢" * units + "⚪" * (3 - units)
 
                         alert_msg = (
-                            f"⚡ <b>AKO / TAŚMA VIP (2 SELEKCJE)</b> ⚡\n"
+                            f"⚡ <b>AKO / TAŚMA VIP (Najbliższe 48h)</b> ⚡\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"1️⃣ {unique_ako[0]['match']} 👉 <b>{unique_ako[0]['selection']}</b> ({unique_ako[0]['price']})\n"
                             f"2️⃣ {unique_ako[1]['match']} 👉 <b>{unique_ako[1]['selection']}</b> ({unique_ako[1]['price']})\n"
