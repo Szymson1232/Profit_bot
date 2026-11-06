@@ -5,26 +5,25 @@ from datetime import datetime, timezone
 import requests
 
 # ==========================================
-# KOREAŃSKI MÓZG OPERACYJNY - FRESH AKO & SOLO
+# KOREAŃSKI MÓZG OPERACYJNY - OPTIMAL GRIND VIP
 # ==========================================
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "2dd63be4b08f78956ef0d1b936b05882").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 
-# Parametry inteligentnego grinda
+# Parametry częstotliwości (~10 typów na dobę)
 SCAN_INTERVAL_SECONDS = 300
-MAX_ALERTS_PER_HOUR = 8
+MAX_ALERTS_PER_HOUR = 3         # Pozwala na regularny dopływ picków bez zasypywania
 
-SOLO_MIN_ODDS = 1.65
+# Lekko skorygowane, optymalne progi żeby bot częściej trafiał na value
+SOLO_MIN_ODDS = 1.60
 SOLO_MAX_ODDS = 2.50
-SOLO_MIN_EDGE = 1.8
+SOLO_MIN_EDGE = 1.2             # Delikatnie luźniejsze sito, żeby częściej łapał dobre mecze
 
-AKO_LEG_MIN_ODDS = 1.30
+AKO_LEG_MIN_ODDS = 1.28
 AKO_LEG_MAX_ODDS = 1.60
 
 UNIT_VALUE_PLN = 25.0
-
-# Kluczowy filtr: bierzemy pod uwagę tylko mecze w ciągu najbliższych 48 godzin!
 MAX_HOURS_AHEAD = 48 
 
 sent_match_cache = set()
@@ -41,7 +40,7 @@ if not ODDS_API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     print("[FATAL ERROR] Brak wymaganych kluczy konfiguracyjnych!")
     sys.exit(1)
 
-print("[INFO] KOREAN OPERATIONAL BRAIN: Filtr czasu (max 48h) aktywny...")
+print("[INFO] KOREAN OPERATIONAL BRAIN: Tryb regularnego grinda (~10 typów/dobę) aktywny...")
 
 
 def send_telegram_alert(message: str):
@@ -118,9 +117,9 @@ def calculate_smart_stake(edge_percent, bet_type="solo"):
     if bet_type == "ako":
         units = 2
     else:
-        if edge_percent >= 4.5:
+        if edge_percent >= 4.0:
             units = 3
-        elif edge_percent >= 2.5:
+        elif edge_percent >= 2.0:
             units = 2
         else:
             units = 1
@@ -143,7 +142,6 @@ def analyze_events(events):
         if not bookmakers or not commence_time:
             continue
 
-        # FILTR CZASOWY: Odrzucamy mecze za więcej niż 48h lub historyczne
         try:
             clean_time = commence_time.replace("Z", "+00:00")
             event_dt = datetime.fromisoformat(clean_time)
@@ -176,10 +174,12 @@ def analyze_events(events):
 
                         edge = ((fair_prob * price) - 1.0) * 100.0
                         unique_id = f"{match_name}_{selection}"
+                        match_id = match_name # Do blokowania kontr na ten sam mecz
 
                         if SOLO_MIN_ODDS <= price <= SOLO_MAX_ODDS and edge >= SOLO_MIN_EDGE:
                             solos.append({
                                 "id": unique_id,
+                                "match_id": match_id,
                                 "match": match_name,
                                 "time": commence_time.replace("T", " ")[:16],
                                 "bookmaker": bm_title,
@@ -188,9 +188,10 @@ def analyze_events(events):
                                 "edge": round(edge, 2)
                             })
 
-                        if AKO_LEG_MIN_ODDS <= price <= AKO_LEG_MAX_ODDS and fair_prob >= 0.60:
+                        if AKO_LEG_MIN_ODDS <= price <= AKO_LEG_MAX_ODDS and fair_prob >= 0.58:
                             ako_candidates.append({
                                 "id": unique_id,
+                                "match_id": match_id,
                                 "match": match_name,
                                 "bookmaker": bm_title,
                                 "selection": selection,
@@ -209,11 +210,11 @@ def can_send_alert():
 
 def main():
     global sent_match_cache, recent_alerts_timestamps
-    print("[INFO] Koreański Mózg Operacyjny ruszył z filtrem świeżych meczów (max 48h)...")
+    print("[INFO] Koreański Mózg Operacyjny: Tryb optymalnej częstotliwości wystartował...")
 
     while True:
         try:
-            print("\n[CYKL] Skanowanie rynków (najbliższe 48h)...")
+            print("\n[CYKL] Skanowanie rynków pod kątem stabilnego dopływu...")
             all_solos = []
             all_ako_legs = []
 
@@ -225,10 +226,13 @@ def main():
                     all_ako_legs.extend(ako_legs)
                 time.sleep(0.5)
 
+            # Śledzimy mecze wysłane w tym cyklu, żeby uniknąć kontr (dwóch stron tego samego meczu)
+            sent_matches_this_cycle = set()
+
             # Wysyłka SOLO
             all_solos.sort(key=lambda x: x["edge"], reverse=True)
             for bet in all_solos:
-                if bet["id"] in sent_match_cache:
+                if bet["id"] in sent_match_cache or bet["match_id"] in sent_matches_this_cycle:
                     continue
 
                 if can_send_alert():
@@ -236,7 +240,7 @@ def main():
                     unit_icons = "🟢" * units + "⚪" * (3 - units)
 
                     alert_msg = (
-                        f"🔥 <b>SOLO VIP PICK (Najbliższe 48h)</b> 🔥\n"
+                        f"🔥 <b>SOLO VIP PICK (Smart Grind)</b> 🔥\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"🏆 <b>Mecz:</b> {bet['match']}\n"
                         f"⏰ <b>Start:</b> {bet['time']} UTC\n"
@@ -249,6 +253,7 @@ def main():
                     )
                     send_telegram_alert(alert_msg)
                     sent_match_cache.add(bet["id"])
+                    sent_matches_this_cycle.add(bet["match_id"])
                     recent_alerts_timestamps.append(time.time())
                     print(f"[WYSŁANO SOLO] {bet['match']} | Stawka: {units}j")
                     time.sleep(2)
@@ -259,7 +264,7 @@ def main():
                 unique_ako = []
                 seen_ako_matches = set()
                 for leg in all_ako_legs:
-                    if leg["id"] not in sent_match_cache and leg["match"] not in seen_ako_matches:
+                    if leg["id"] not in sent_match_cache and leg["match_id"] not in sent_matches_this_cycle and leg["match"] not in seen_ako_matches:
                         unique_ako.append(leg)
                         seen_ako_matches.add(leg["match"])
                     if len(unique_ako) == 2:
@@ -269,12 +274,12 @@ def main():
                     total_odds = round(unique_ako[0]["price"] * unique_ako[1]["price"], 2)
                     ako_key = f"AKO_{unique_ako[0]['id']}_{unique_ako[1]['id']}"
 
-                    if ako_key not in sent_match_cache and 1.85 <= total_odds <= 3.20:
+                    if ako_key not in sent_match_cache and 1.80 <= total_odds <= 3.20:
                         units, amount_pln = calculate_smart_stake(0, "ako")
                         unit_icons = "🟢" * units + "⚪" * (3 - units)
 
                         alert_msg = (
-                            f"⚡ <b>AKO / TAŚMA VIP (Najbliższe 48h)</b> ⚡\n"
+                            f"⚡ <b>AKO / TAŚMA VIP (Smart Grind)</b> ⚡\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"1️⃣ {unique_ako[0]['match']} 👉 <b>{unique_ako[0]['selection']}</b> ({unique_ako[0]['price']})\n"
                             f"2️⃣ {unique_ako[1]['match']} 👉 <b>{unique_ako[1]['selection']}</b> ({unique_ako[1]['price']})\n"
@@ -286,6 +291,8 @@ def main():
                         sent_match_cache.add(ako_key)
                         sent_match_cache.add(unique_ako[0]["id"])
                         sent_match_cache.add(unique_ako[1]["id"])
+                        sent_matches_this_cycle.add(unique_ako[0]["match_id"])
+                        sent_matches_this_cycle.add(unique_ako[1]["match_id"])
                         recent_alerts_timestamps.append(time.time())
                         print(f"[WYSŁANO AKO] Kurs łączny: {total_odds} | Stawka: {units}j")
 
