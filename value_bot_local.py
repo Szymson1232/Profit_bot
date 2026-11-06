@@ -4,13 +4,13 @@ import time
 import requests
 
 # ==========================================
-# KOREAŃSKI MÓZG OPERACYJNY - SMART STAKES VIP
+# KOREAŃSKI MÓZG OPERACYJNY - CLEAN PRO VIP
 # ==========================================
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "2dd63be4b08f78956ef0d1b936b05882").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 
-# --- PARAMETRY INTELIGENTNEGO GRINDU ---
+# Parametry inteligentnego grinda
 SCAN_INTERVAL_SECONDS = 300
 MAX_ALERTS_PER_HOUR = 8
 
@@ -23,6 +23,7 @@ AKO_LEG_MAX_ODDS = 1.60
 
 UNIT_VALUE_PLN = 25.0
 
+# Pamięć podręczna blokująca duplikaty i spam
 sent_match_cache = set()
 recent_alerts_timestamps = []
 
@@ -37,7 +38,7 @@ if not ODDS_API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     print("[FATAL ERROR] Brak wymaganych kluczy konfiguracyjnych!")
     sys.exit(1)
 
-print("[INFO] KOREAN OPERATIONAL BRAIN: Smart Stakes Mode AKO & Solo wystartował...")
+print("[INFO] KOREAN OPERATIONAL BRAIN: Start bez spamu i powitalnych śmieci...")
 
 
 def send_telegram_alert(message: str):
@@ -160,9 +161,11 @@ def analyze_events(events):
                             continue
 
                         edge = ((fair_prob * price) - 1.0) * 100.0
+                        unique_id = f"{match_name}_{selection}"
 
                         if SOLO_MIN_ODDS <= price <= SOLO_MAX_ODDS and edge >= SOLO_MIN_EDGE:
                             solos.append({
+                                "id": unique_id,
                                 "match": match_name,
                                 "time": commence_time.replace("T", " ")[:16] if commence_time else "Live",
                                 "bookmaker": bm_title,
@@ -173,6 +176,7 @@ def analyze_events(events):
 
                         if AKO_LEG_MIN_ODDS <= price <= AKO_LEG_MAX_ODDS and fair_prob >= 0.60:
                             ako_candidates.append({
+                                "id": unique_id,
                                 "match": match_name,
                                 "bookmaker": bm_title,
                                 "selection": selection,
@@ -190,18 +194,15 @@ def can_send_alert():
 
 
 def main():
-    startup_msg = (
-        "💎 <b>KOREAN OPERATIONAL BRAIN: SMART STAKES</b> 💎\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🎯 Strategia: <b>Solo + Inteligentne AKO</b>\n"
-        "💵 Stawkowanie: <b>Dopasowane do ryzyka (1j-3j)</b>\n"
-        "🚀 <i>Gramy z głową po pitos!</i>"
-    )
-    send_telegram_alert(startup_msg)
+    global sent_match_cache, recent_alerts_timestamps
+    
+    # Usunięto denerwujący spam powitalny na Telegramie. 
+    # Teraz bot rusza całkowicie cicho i profesjonalnie.
+    print("[INFO] Koreański Mózg Operacyjny wszedł w tryb ciągłego skanowania rynków...")
 
     while True:
         try:
-            print("\n[CYKL] Skanowanie rynków z inteligentnym stakowaniem...")
+            print("\n[CYKL] Skanowanie globalne w toku...")
             all_solos = []
             all_ako_legs = []
 
@@ -213,9 +214,10 @@ def main():
                     all_ako_legs.extend(ako_legs)
                 time.sleep(0.5)
 
+            # Wysyłka SOLO (tylko unikalne)
             all_solos.sort(key=lambda x: x["edge"], reverse=True)
             for bet in all_solos:
-                if bet["match"] in sent_match_cache:
+                if bet["id"] in sent_match_cache:
                     continue
 
                 if can_send_alert():
@@ -235,25 +237,26 @@ def main():
                         f"━━━━━━━━━━━━━━━━━━━━━━"
                     )
                     send_telegram_alert(alert_msg)
-                    sent_match_cache.add(bet["match"])
+                    sent_match_cache.add(bet["id"])
                     recent_alerts_timestamps.append(time.time())
                     print(f"[WYSŁANO SOLO] {bet['match']} | Stawka: {units}j")
                     time.sleep(2)
                     break
 
+            # Wysyłka AKO (tylko unikalne)
             if len(all_ako_legs) >= 2 and can_send_alert():
                 unique_ako = []
-                seen_matches = set()
+                seen_ako_matches = set()
                 for leg in all_ako_legs:
-                    if leg["match"] not in seen_matches:
+                    if leg["id"] not in sent_match_cache and leg["match"] not in seen_ako_matches:
                         unique_ako.append(leg)
-                        seen_matches.add(leg["match"])
+                        seen_ako_matches.add(leg["match"])
                     if len(unique_ako) == 2:
                         break
 
                 if len(unique_ako) == 2:
                     total_odds = round(unique_ako[0]["price"] * unique_ako[1]["price"], 2)
-                    ako_key = f"AKO_{unique_ako[0]['match']}_{unique_ako[1]['match']}"
+                    ako_key = f"AKO_{unique_ako[0]['id']}_{unique_ako[1]['id']}"
 
                     if ako_key not in sent_match_cache and 1.85 <= total_odds <= 3.20:
                         units, amount_pln = calculate_smart_stake(0, "ako")
@@ -270,6 +273,8 @@ def main():
                         )
                         send_telegram_alert(alert_msg)
                         sent_match_cache.add(ako_key)
+                        sent_match_cache.add(unique_ako[0]["id"])
+                        sent_match_cache.add(unique_ako[1]["id"])
                         recent_alerts_timestamps.append(time.time())
                         print(f"[WYSŁANO AKO] Kurs łączny: {total_odds} | Stawka: {units}j")
 
