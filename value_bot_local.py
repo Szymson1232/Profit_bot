@@ -13,18 +13,18 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 
 # Parametry częstotliwości (~10 typów na dobę)
 SCAN_INTERVAL_SECONDS = 300
-MAX_ALERTS_PER_HOUR = 3         # Pozwala na regularny dopływ picków bez zasypywania
+MAX_ALERTS_PER_HOUR = 3         # Regularny dopływ picków bez spamu
 
-# Lekko skorygowane, optymalne progi żeby bot częściej trafiał na value
+# Zoptymalizované progi – obniżony Edge i poszerzone okno czasowe
 SOLO_MIN_ODDS = 1.60
 SOLO_MAX_ODDS = 2.50
-SOLO_MIN_EDGE = 1.2             # Delikatnie luźniejsze sito, żeby częściej łapał dobre mecze
+SOLO_MIN_EDGE = 0.8             # Luźniejsze sito, żeby częściej wyłapywał value
 
 AKO_LEG_MIN_ODDS = 1.28
 AKO_LEG_MAX_ODDS = 1.60
 
 UNIT_VALUE_PLN = 25.0
-MAX_HOURS_AHEAD = 48 
+MAX_HOURS_AHEAD = 72            # Okno do 3 dni dla większej bazy meczów
 
 sent_match_cache = set()
 recent_alerts_timestamps = []
@@ -40,7 +40,7 @@ if not ODDS_API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     print("[FATAL ERROR] Brak wymaganych kluczy konfiguracyjnych!")
     sys.exit(1)
 
-print("[INFO] KOREAN OPERATIONAL BRAIN: Tryb regularnego grinda (~10 typów/dobę) aktywny...")
+print("[INFO] KOREAN OPERATIONAL BRAIN: Tryb optymalnej częstotliwości (Edge 0.8%, 72h) wystartował...")
 
 
 def send_telegram_alert(message: str):
@@ -117,9 +117,9 @@ def calculate_smart_stake(edge_percent, bet_type="solo"):
     if bet_type == "ako":
         units = 2
     else:
-        if edge_percent >= 4.0:
+        if edge_percent >= 3.5:
             units = 3
-        elif edge_percent >= 2.0:
+        elif edge_percent >= 1.8:
             units = 2
         else:
             units = 1
@@ -174,7 +174,7 @@ def analyze_events(events):
 
                         edge = ((fair_prob * price) - 1.0) * 100.0
                         unique_id = f"{match_name}_{selection}"
-                        match_id = match_name # Do blokowania kontr na ten sam mecz
+                        match_id = match_name
 
                         if SOLO_MIN_ODDS <= price <= SOLO_MAX_ODDS and edge >= SOLO_MIN_EDGE:
                             solos.append({
@@ -210,7 +210,7 @@ def can_send_alert():
 
 def main():
     global sent_match_cache, recent_alerts_timestamps
-    print("[INFO] Koreański Mózg Operacyjny: Tryb optymalnej częstotliwości wystartował...")
+    print("[INFO] Koreański Mózg Operacyjny: Tryb optymalny aktywny...")
 
     while True:
         try:
@@ -226,7 +226,6 @@ def main():
                     all_ako_legs.extend(ako_legs)
                 time.sleep(0.5)
 
-            # Śledzimy mecze wysłane w tym cyklu, żeby uniknąć kontr (dwóch stron tego samego meczu)
             sent_matches_this_cycle = set()
 
             # Wysyłka SOLO
