@@ -10,7 +10,7 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Nowe godziny VIP (06:25 oraz 18:25 czasu polskiego)
+# Ścisłe godziny VIP (06:25 oraz 18:25 czasu polskiego) - ŻADNYCH INNYCH
 SCHEDULED_HOURS = ["06:25", "18:25"]
 
 # Pełna baza dyscyplin pod maszynkę zysku
@@ -224,10 +224,7 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM VIP] Bot gotowy. Harmonogram: 06:25 oraz 18:25...")
-        
-        # NATYCHMIASTOWY SKAN TESTOWY PO STARCIE (od razu zobaczysz ruch na Telegramie)
-        run_analysis_cycle(reason="Testowy skan po starcie / wdrożeniu")
+        print("[SYSTEM VIP] Bot gotowy. Harmonogram: 06:25 oraz 18:25 (dokładnie 2 razy na dobę)...")
         
         last_run_date_slot = None
         
@@ -238,14 +235,13 @@ if __name__ == "__main__":
                 current_date_str = now.strftime("%Y-%m-%d")
                 current_slot_id = f"{current_date_str}_{current_time_str}"
                 
+                # Uruchamia się TYLKO wtedy, gdy bieżący czas pasuje do harmonogramu 
+                # ORAZ ten konkretny slot czasowy nie był jeszcze w tym dniu uruchamiany
                 if current_time_str in SCHEDULED_HOURS and last_run_date_slot != current_slot_id:
                     run_analysis_cycle(reason=f"Slot VIP {current_time_str}")
                     last_run_date_slot = current_slot_id
                 
-                if current_time_str not in SCHEDULED_HOURS:
-                    pass
-                    
             except Exception as e:
                 print(f"[CRITICAL] Błąd pętli głównej: {e}")
                 
-            time.sleep(30)
+            time.sleep(15) # Sprawdzanie zegara co 15 sekund dla pełnej precyzji minutowej
