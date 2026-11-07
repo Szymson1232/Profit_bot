@@ -45,7 +45,6 @@ def verify_environment():
 def init_db():
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
-    # Tabela z datą i czasem wysłania, aby blokować duplikaty na dobę
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sent_akos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,10 +138,20 @@ def run_analysis_cycle(reason="Harmonogram"):
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
     
+    # Zbiór śledzący mecze użyte w obecnym cyklu – ŻADEN mecz nie powtórzy się na taśmach!
+    used_matches_in_cycle = set()
+    
+    # Sortujemy faworytów stabilnie, aby deterministycznie dobierać najlepsze kombinacje
     for r in range(2, MAX_AKO_EVENTS + 1):
         for combo in combinations(all_favorites, r):
             matches = [item['match'] for item in combo]
+            
+            # 1. Sprawdzenie czy w samej kombinacji nie ma duplikatu meczu
             if len(set(matches)) != len(matches):
+                continue
+                
+            # 2. Twardy filtr: czy którykolwiek mecz z tej kombinacji został już użyty w tym cyklu?
+            if any(match in used_matches_in_cycle for match in matches):
                 continue
                 
             total_odds = 1.0
@@ -152,13 +161,17 @@ def run_analysis_cycle(reason="Harmonogram"):
             if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
                 signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
                 
-                # Twarda baza danych: sprawdzenie czy ten kupon już kiedykolwiek trafił na kanał
+                # 3. Sprawdzenie w bazie SQLite czy kupon nie był wysłany wcześniej
                 cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (signature,))
                 if cursor.fetchone() is None:
-                    # Zapisujemy do bazy z aktualnym czasem
+                    # Zapisujemy do bazy
                     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (signature, now_str))
                     conn.commit()
+                    
+                    # Oznaczamy mecze jako wykorzystane w tym cyklu, żeby żaden inny kupon ich nie zduplikował
+                    for m in matches:
+                        used_matches_in_cycle.add(m)
                     
                     msg = f"<b>🎯 MASZYNA ZYSKU: MASTER AKO ({r} zdarzenia) 🎯</b>\n\n"
                     for idx, item in enumerate(combo, 1):
@@ -169,13 +182,11 @@ def run_analysis_cycle(reason="Harmonogram"):
                     generated_akos += 1
                     
     conn.close()
-    print(f"[AKO] Wypuszczono na kanał: {generated_akos} unikalnych kuponów.")
+    print(f"[AKO] Wypuszczono na kanał: {generated_akos} w pełni unikalnych kuponów (bez powtórek meczów).")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        
-        # UWAGA: Usunięto skan natychmiastowy po starcie, żeby Railway przy restartach nie generował śmieci!
         print("[SYSTEM] Bot oczekuje na zaplanowane okna czasowe (08:00 i 20:00)...")
         
         last_run_date_slot = None
@@ -185,8 +196,6 @@ if __name__ == "__main__":
                 now = datetime.now()
                 current_time_str = now.strftime("%H:%M")
                 current_date_str = now.strftime("%Y-%m-%d")
-                
-                # Unikalny identyfikator slotu (np. "2026-11-07_20:00")
                 current_slot_id = f"{current_date_str}_{current_time_str}"
                 
                 if current_time_str in SCHEDULED_HOURS and last_run_date_slot != current_slot_id:
@@ -194,10 +203,9 @@ if __name__ == "__main__":
                     last_run_date_slot = current_slot_id
                 
                 if current_time_str not in SCHEDULED_HOURS:
-                    # Resetujemy slot, gdy minie wyznaczona minuta
                     pass
                     
             except Exception as e:
                 print(f"[CRITICAL] Błąd pętli: {e}")
                 
-            time.sleep(30) # Sprawdzanie zegara co 30 sekund
+            time.sleep(30)
