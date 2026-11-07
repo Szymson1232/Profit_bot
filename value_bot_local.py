@@ -7,7 +7,7 @@ import requests
 # ==========================================
 # KOREAŃSKI MÓZG OPERACYJNY - DEBUG & FIX VIP
 # ==========================================
-ODDS_API_KEY = os.getenv("ODDS_API_KEY", "2dd63be4b08f78956ef0d1b936b05882").strip()
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "b8e9dd7127d7afee70c5eeb8a8a730a0").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802").strip()
 
