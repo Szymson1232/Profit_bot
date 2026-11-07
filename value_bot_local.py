@@ -10,28 +10,28 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Harmonogram: 2 razy dziennie dla optymalizacji darmowego limitu API
+# Harmonogram: 2 razy dziennie (08:00 i 20:00) dla ochrony limitu darmowego API
 SCHEDULED_HOURS = ["08:00", "20:00"]
 
-# Rozszerzona baza dyscyplin pod kątem maszynki zysku (Piłka, Kosz, Hokej, Tenis, Baseball)
+# Rozszerzona baza dyscyplin (Piłka, Kosz, Hokej, Tenis, Baseball)
 SPORTS_TO_CHECK = [
-    "soccer_epl",                  # Piłka nożna: Premier League
-    "soccer_spain_la_liga",        # Piłka nożna: La Liga
-    "soccer_germany_bundesliga",    # Piłka nożna: Bundesliga
-    "soccer_italy_serie_a",        # Piłka nożna: Serie A
-    "soccer_france_ligue_one",     # Piłka nożna: Ligue 1
-    "basketball_nba",              # Koszykówka: NBA
-    "basketball_euroleague",       # Koszykówka: Euroliga
-    "icehockey_nhl",               # Hokej: NHL
-    "tennis_atp_aus_open",         # Tenis: ATP (lub bieżący turniej)
-    "baseball_mlb"                 # Baseball: MLB
+    "soccer_epl",                  
+    "soccer_spain_la_liga",        
+    "soccer_germany_bundesliga",    
+    "soccer_italy_serie_a",        
+    "soccer_france_ligue_one",     
+    "basketball_nba",              
+    "basketball_euroleague",       
+    "icehockey_nhl",               
+    "tennis_atp_aus_open",         
+    "baseball_mlb"                 
 ]
 
-# Parametry żelaznej strategii AKO (pewniaczki)
+# Parametry strategii AKO
 MIN_ODDS_SINGLE = 1.12
 MAX_ODDS_SINGLE = 1.48
 MIN_AKO_TOTAL = 2.00    # Dolna granica pod Betclic Bez Podatku
-MAX_AKO_TOTAL = 2.50    # Górna granica dla maksymalnego bezpieczeństwa
+MAX_AKO_TOTAL = 2.50    # Górna granica bezpieczeństwa
 MAX_AKO_EVENTS = 3      # Maksymalnie 3 zdarzenia na taśmie
 
 def verify_environment():
@@ -89,9 +89,18 @@ def fetch_odds_for_sport(sport):
 
 def extract_favorites(events, sport_name):
     favorites = []
+    # Używamy słownika, żeby unikać duplikatów tego samego meczu w jednej tablicy sportu
+    seen_matches = set()
+    
     for event in events:
         home_team = event.get('home_team')
         away_team = event.get('away_team')
+        match_key = f"{home_team}_{away_team}"
+        
+        if match_key in seen_matches:
+            continue
+        seen_matches.add(match_key)
+        
         commence_time = event.get('commence_time', '')
         
         for bookmaker in event.get('bookmakers', []):
@@ -130,6 +139,9 @@ def run_analysis_cycle(reason="Harmonogram"):
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
     
+    # Zbiór zapobiegający wysłaniu tego samego kuponu wielokrotnie w tym samym cyklu
+    sent_in_this_cycle = set()
+    
     for r in range(2, MAX_AKO_EVENTS + 1):
         for combo in combinations(all_favorites, r):
             matches = [item['match'] for item in combo]
@@ -141,13 +153,20 @@ def run_analysis_cycle(reason="Harmonogram"):
                 total_odds *= item['odds']
                 
             if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
+                # Unikalny podpis kuponu bazujący na posortowanych zdarzeniach
                 signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
                 
+                if signature in sent_in_this_cycle:
+                    continue
+                
+                # Sprawdzenie w bazie SQLite czy kupon nie był już wysłany wcześniej w ogóle
                 cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (signature,))
                 if cursor.fetchone() is None:
                     cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", 
                                    (signature, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
                     conn.commit()
+                    
+                    sent_in_this_cycle.add(signature)
                     
                     msg = f"<b>🎯 MASZYNA ZYSKU: MASTER AKO ({r} zdarzenia) 🎯</b>\n\n"
                     for idx, item in enumerate(combo, 1):
@@ -158,7 +177,7 @@ def run_analysis_cycle(reason="Harmonogram"):
                     generated_akos += 1
                     
     conn.close()
-    print(f"[AKO] Wypuszczono na kanał: {generated_akos} kuponów.")
+    print(f"[AKO] Wypuszczono na kanał: {generated_akos} unikalnych kuponów.")
 
 if __name__ == "__main__":
     if verify_environment():
