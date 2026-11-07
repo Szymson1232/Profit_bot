@@ -5,13 +5,13 @@ import requests
 from datetime import datetime, timedelta
 from itertools import combinations
 
-# --- KONFIGURACJA MASZYNY ZYSKU (W 100% UZUPEŁNIONA) ---
+# --- KONFIGURACJA MASZYNY ZYSKU ---
 API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Zaktualizowane godziny VIP (punktualnie o 06:15 i 18:15 czasu polskiego)
-SCHEDULED_HOURS = ["06:15", "18:15"]
+# Nowe godziny VIP (06:25 oraz 18:25 czasu polskiego)
+SCHEDULED_HOURS = ["06:25", "18:25"]
 
 # Pełna baza dyscyplin pod maszynkę zysku
 SPORTS_TO_CHECK = [
@@ -28,14 +28,12 @@ SPORTS_TO_CHECK = [
 ]
 
 # Parametry żelaznej strategii VIP AKO
-MIN_ODDS_SINGLE = 1.12
-MAX_ODDS_SINGLE = 1.48
+MIN_ODDS_SINGLE = 1.10
+MAX_ODDS_SINGLE = 1.52
 MIN_AKO_TOTAL = 2.00    # Dolna granica pod Betclic Bez Podatku
-MAX_AKO_TOTAL = 2.50    # Górna granica bezpieczeństwa
+MAX_AKO_TOTAL = 2.55    # Górna granica bezpieczeństwa
 MAX_AKO_EVENTS = 3      # Maksymalnie 3 zdarzenia na taśmie
 
-# Limity publikacji na dobę (celujemy w 4 do 10 AKO na dobę)
-MIN_AKO_PER_CYCLE = 2
 MAX_AKO_PER_CYCLE = 5
 
 def verify_environment():
@@ -100,12 +98,7 @@ def parse_iso_time(time_str):
         return None
 
 def calculate_stake_and_confidence(combo, total_odds):
-    """
-    Analizuje kupon i przypisuje stawkę (1j=25zł, 2j=50zł, 3j=75zł) 
-    oraz szacowany poziom pewności na podstawie kursów pojedynczych.
-    """
     avg_odds = sum(item['odds'] for item in combo) / len(combo)
-    
     if avg_odds <= 1.25 and len(combo) == 2:
         return "3j (75 zł)", "💎💎💎 Masywne Value / Najwyższa pewność"
     elif avg_odds <= 1.35:
@@ -117,7 +110,7 @@ def extract_favorites(events, sport_name):
     favorites = []
     seen_matches = set()
     now = datetime.now()
-    max_allowed_date = now + timedelta(days=1)
+    max_allowed_date = now + timedelta(hours=48)
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -164,14 +157,13 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Wyłapano {len(all_favorites)} pewniaków w oknie czasowym.")
+    print(f"[ANALIZA] Wyłapano {len(all_favorites)} stabilnych faworytów.")
     
     candidates_to_send = []
     
     for r in range(2, MAX_AKO_EVENTS + 1):
         for combo in combinations(all_favorites, r):
             matches = [item['match'] for item in combo]
-            
             if len(set(matches)) != len(matches):
                 continue
                 
@@ -227,12 +219,15 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
             generated_akos += 1
             
     conn.close()
-    print(f"[AKO VIP] Wypuszczono na kanał: {generated_akos} unikalnych kuponów VIP ze stawkami.")
+    print(f"[AKO VIP] Wypuszczono na kanał: {generated_akos} unikalnych kuponów VIP.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM VIP] Bot gotowy. Oczekuje na godziny 06:15 oraz 18:15 czasu polskiego...")
+        print("[SYSTEM VIP] Bot gotowy. Harmonogram: 06:25 oraz 18:25...")
+        
+        # NATYCHMIASTOWY SKAN TESTOWY PO STARCIE (od razu zobaczysz ruch na Telegramie)
+        run_analysis_cycle(reason="Testowy skan po starcie / wdrożeniu")
         
         last_run_date_slot = None
         
