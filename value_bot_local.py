@@ -10,8 +10,8 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Dokładne godziny VIP (punktualnie o 06:05 i 18:05 czasu polskiego)
-SCHEDULED_HOURS = ["06:05", "18:05"]
+# Zaktualizowane godziny VIP (punktualnie o 06:15 i 18:15 czasu polskiego)
+SCHEDULED_HOURS = ["06:15", "18:15"]
 
 # Pełna baza dyscyplin pod maszynkę zysku
 SPORTS_TO_CHECK = [
@@ -106,7 +106,6 @@ def calculate_stake_and_confidence(combo, total_odds):
     """
     avg_odds = sum(item['odds'] for item in combo) / len(combo)
     
-    # Im bliżej dolnej granicy faworytów (1.12), tym wyższa pewność i większa stawka
     if avg_odds <= 1.25 and len(combo) == 2:
         return "3j (75 zł)", "💎💎💎 Masywne Value / Najwyższa pewność"
     elif avg_odds <= 1.35:
@@ -213,7 +212,6 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
             for m in cand['matches']:
                 used_matches_in_cycle.add(m)
                 
-            # Wyznaczamy stawkę i pewność kuponu
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
             msg = f"<b>🔥 VIP MASTER AKO ({cand['r']} ZDARZENIA) 🔥</b>\n\n"
@@ -234,7 +232,7 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM VIP] Bot gotowy. Oczekuje na godziny 06:05 oraz 18:05 czasu polskiego...")
+        print("[SYSTEM VIP] Bot gotowy. Oczekuje na godziny 06:15 oraz 18:15 czasu polskiego...")
         
         last_run_date_slot = None
         
