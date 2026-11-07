@@ -2,16 +2,16 @@ import os
 import time
 import sqlite3
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import combinations
 
-# --- KONFIGURACJA MASZYNY ZYSKU ---
+# --- KONFIGURACJA MASZYNY ZYSKU (W 100% UZUPEŁNIONA) ---
 API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Sztywne godziny skanowania: rano (08:00) i wieczorem (20:00)
-SCHEDULED_HOURS = ["08:00", "20:00"]
+# Dokładne godziny VIP (punktualnie o 06:05 i 18:05 czasu polskiego)
+SCHEDULED_HOURS = ["06:05", "18:05"]
 
 # Pełna baza dyscyplin pod maszynkę zysku
 SPORTS_TO_CHECK = [
@@ -27,19 +27,23 @@ SPORTS_TO_CHECK = [
     "baseball_mlb"                 
 ]
 
-# Parametry strategii AKO
+# Parametry żelaznej strategii VIP AKO
 MIN_ODDS_SINGLE = 1.12
 MAX_ODDS_SINGLE = 1.48
 MIN_AKO_TOTAL = 2.00    # Dolna granica pod Betclic Bez Podatku
 MAX_AKO_TOTAL = 2.50    # Górna granica bezpieczeństwa
 MAX_AKO_EVENTS = 3      # Maksymalnie 3 zdarzenia na taśmie
 
+# Limity publikacji na dobę (celujemy w 4 do 10 AKO na dobę)
+MIN_AKO_PER_CYCLE = 2
+MAX_AKO_PER_CYCLE = 5
+
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM OK] Maszyna wystartowała. API Key: {masked}")
+    print(f"[SYSTEM VIP OK] Chiński analityczny mózg wystartował. API Key: {masked}")
     return True
 
 def init_db():
@@ -87,11 +91,42 @@ def fetch_odds_for_sport(sport):
         print(f"[EXCEPTION] {sport}: {e}")
         return []
 
+def parse_iso_time(time_str):
+    try:
+        if time_str.endswith('Z'):
+            time_str = time_str[:-1]
+        return datetime.fromisoformat(time_str)
+    except Exception:
+        return None
+
+def calculate_stake_and_confidence(combo, total_odds):
+    """
+    Analizuje kupon i przypisuje stawkę (1j=25zł, 2j=50zł, 3j=75zł) 
+    oraz szacowany poziom pewności na podstawie kursów pojedynczych.
+    """
+    avg_odds = sum(item['odds'] for item in combo) / len(combo)
+    
+    # Im bliżej dolnej granicy faworytów (1.12), tym wyższa pewność i większa stawka
+    if avg_odds <= 1.25 and len(combo) == 2:
+        return "3j (75 zł)", "💎💎💎 Masywne Value / Najwyższa pewność"
+    elif avg_odds <= 1.35:
+        return "2j (50 zł)", "⭐⭐⭐ Wysoka pewność"
+    else:
+        return "1j (25 zł)", "⭐⭐ Standardowy pewniak"
+
 def extract_favorites(events, sport_name):
     favorites = []
     seen_matches = set()
+    now = datetime.now()
+    max_allowed_date = now + timedelta(days=1)
     
     for event in events:
+        commence_time_str = event.get('commence_time', '')
+        event_time = parse_iso_time(commence_time_str)
+        
+        if event_time and (event_time < now or event_time > max_allowed_date):
+            continue
+            
         home_team = event.get('home_team')
         away_team = event.get('away_team')
         match_key = f"{home_team}_{away_team}"
@@ -99,8 +134,6 @@ def extract_favorites(events, sport_name):
         if match_key in seen_matches:
             continue
         seen_matches.add(match_key)
-        
-        commence_time = event.get('commence_time', '')
         
         for bookmaker in event.get('bookmakers', []):
             for market in bookmaker.get('markets', []):
@@ -116,14 +149,14 @@ def extract_favorites(events, sport_name):
                                 'selection': name,
                                 'odds': price,
                                 'sport': sport_name,
-                                'time': commence_time
+                                'time': commence_time_str
                             })
                     break
             break
     return favorites
 
-def run_analysis_cycle(reason="Harmonogram"):
-    print(f"\n[CYKL] Skanowanie rynku ({reason}): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+def run_analysis_cycle(reason="Harmonogram VIP"):
+    print(f"\n[CYKL VIP] Skanowanie rynku ({reason}): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     all_favorites = []
     
     for sport in SPORTS_TO_CHECK:
@@ -132,26 +165,15 @@ def run_analysis_cycle(reason="Harmonogram"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Wyłapano {len(all_favorites)} stabilnych faworytów.")
+    print(f"[ANALIZA] Wyłapano {len(all_favorites)} pewniaków w oknie czasowym.")
     
-    generated_akos = 0
-    conn = sqlite3.connect("monsters_bets.db")
-    cursor = conn.cursor()
+    candidates_to_send = []
     
-    # Zbiór śledzący mecze użyte w obecnym cyklu – ŻADEN mecz nie powtórzy się na taśmach!
-    used_matches_in_cycle = set()
-    
-    # Sortujemy faworytów stabilnie, aby deterministycznie dobierać najlepsze kombinacje
     for r in range(2, MAX_AKO_EVENTS + 1):
         for combo in combinations(all_favorites, r):
             matches = [item['match'] for item in combo]
             
-            # 1. Sprawdzenie czy w samej kombinacji nie ma duplikatu meczu
             if len(set(matches)) != len(matches):
-                continue
-                
-            # 2. Twardy filtr: czy którykolwiek mecz z tej kombinacji został już użyty w tym cyklu?
-            if any(match in used_matches_in_cycle for match in matches):
                 continue
                 
             total_odds = 1.0
@@ -160,34 +182,59 @@ def run_analysis_cycle(reason="Harmonogram"):
                 
             if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
                 signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
+                candidates_to_send.append({
+                    'signature': signature,
+                    'combo': combo,
+                    'total_odds': total_odds,
+                    'r': r,
+                    'matches': matches
+                })
                 
-                # 3. Sprawdzenie w bazie SQLite czy kupon nie był wysłany wcześniej
-                cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (signature,))
-                if cursor.fetchone() is None:
-                    # Zapisujemy do bazy
-                    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (signature, now_str))
-                    conn.commit()
-                    
-                    # Oznaczamy mecze jako wykorzystane w tym cyklu, żeby żaden inny kupon ich nie zduplikował
-                    for m in matches:
-                        used_matches_in_cycle.add(m)
-                    
-                    msg = f"<b>🎯 MASZYNA ZYSKU: MASTER AKO ({r} zdarzenia) 🎯</b>\n\n"
-                    for idx, item in enumerate(combo, 1):
-                        msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
-                    msg += f"\n📊 <b>Kurs Łączny: {total_odds:.2f}</b>\n💎 <i>Cel: Betclic (BEZ PODATKU)</i>"
-                    
-                    send_telegram_message(msg)
-                    generated_akos += 1
-                    
+    candidates_to_send.sort(key=lambda x: x['total_odds'], reverse=True)
+    
+    generated_akos = 0
+    conn = sqlite3.connect("monsters_bets.db")
+    cursor = conn.cursor()
+    used_matches_in_cycle = set()
+    
+    for cand in candidates_to_send:
+        if generated_akos >= MAX_AKO_PER_CYCLE:
+            break
+            
+        if any(m in used_matches_in_cycle for m in cand['matches']):
+            continue
+            
+        cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
+        if cursor.fetchone() is None:
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
+            conn.commit()
+            
+            for m in cand['matches']:
+                used_matches_in_cycle.add(m)
+                
+            # Wyznaczamy stawkę i pewność kuponu
+            stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
+            
+            msg = f"<b>🔥 VIP MASTER AKO ({cand['r']} ZDARZENIA) 🔥</b>\n\n"
+            for idx, item in enumerate(cand['combo'], 1):
+                msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
+            
+            msg += f"\n📊 <b>Kurs Łączny: {cand['total_odds']:.2f}</b>"
+            msg += f"\n🎯 <b>Analiza Pewności:</b> {confidence}"
+            msg += f"\n💰 <b>Zalecana Stawka: {stake}</b>"
+            msg += f"\n💎 <i>Betclic (BEZ PODATKU) | System Monster's Bets</i>"
+            
+            send_telegram_message(msg)
+            generated_akos += 1
+            
     conn.close()
-    print(f"[AKO] Wypuszczono na kanał: {generated_akos} w pełni unikalnych kuponów (bez powtórek meczów).")
+    print(f"[AKO VIP] Wypuszczono na kanał: {generated_akos} unikalnych kuponów VIP ze stawkami.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM] Bot oczekuje na zaplanowane okna czasowe (08:00 i 20:00)...")
+        print("[SYSTEM VIP] Bot gotowy. Oczekuje na godziny 06:05 oraz 18:05 czasu polskiego...")
         
         last_run_date_slot = None
         
@@ -199,13 +246,13 @@ if __name__ == "__main__":
                 current_slot_id = f"{current_date_str}_{current_time_str}"
                 
                 if current_time_str in SCHEDULED_HOURS and last_run_date_slot != current_slot_id:
-                    run_analysis_cycle(reason=f"Slot {current_time_str}")
+                    run_analysis_cycle(reason=f"Slot VIP {current_time_str}")
                     last_run_date_slot = current_slot_id
                 
                 if current_time_str not in SCHEDULED_HOURS:
                     pass
                     
             except Exception as e:
-                print(f"[CRITICAL] Błąd pętli: {e}")
+                print(f"[CRITICAL] Błąd pętli głównej: {e}")
                 
             time.sleep(30)
