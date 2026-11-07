@@ -10,10 +10,10 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Harmonogram: 2 razy dziennie (08:00 i 20:00) dla ochrony limitu darmowego API
+# Sztywne godziny skanowania: rano (08:00) i wieczorem (20:00)
 SCHEDULED_HOURS = ["08:00", "20:00"]
 
-# Rozszerzona baza dyscyplin (Piłka, Kosz, Hokej, Tenis, Baseball)
+# Pełna baza dyscyplin pod maszynkę zysku
 SPORTS_TO_CHECK = [
     "soccer_epl",                  
     "soccer_spain_la_liga",        
@@ -45,6 +45,7 @@ def verify_environment():
 def init_db():
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
+    # Tabela z datą i czasem wysłania, aby blokować duplikaty na dobę
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sent_akos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +90,6 @@ def fetch_odds_for_sport(sport):
 
 def extract_favorites(events, sport_name):
     favorites = []
-    # Używamy słownika, żeby unikać duplikatów tego samego meczu w jednej tablicy sportu
     seen_matches = set()
     
     for event in events:
@@ -139,9 +139,6 @@ def run_analysis_cycle(reason="Harmonogram"):
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
     
-    # Zbiór zapobiegający wysłaniu tego samego kuponu wielokrotnie w tym samym cyklu
-    sent_in_this_cycle = set()
-    
     for r in range(2, MAX_AKO_EVENTS + 1):
         for combo in combinations(all_favorites, r):
             matches = [item['match'] for item in combo]
@@ -153,25 +150,20 @@ def run_analysis_cycle(reason="Harmonogram"):
                 total_odds *= item['odds']
                 
             if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
-                # Unikalny podpis kuponu bazujący na posortowanych zdarzeniach
                 signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
                 
-                if signature in sent_in_this_cycle:
-                    continue
-                
-                # Sprawdzenie w bazie SQLite czy kupon nie był już wysłany wcześniej w ogóle
+                # Twarda baza danych: sprawdzenie czy ten kupon już kiedykolwiek trafił na kanał
                 cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (signature,))
                 if cursor.fetchone() is None:
-                    cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", 
-                                   (signature, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                    # Zapisujemy do bazy z aktualnym czasem
+                    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (signature, now_str))
                     conn.commit()
-                    
-                    sent_in_this_cycle.add(signature)
                     
                     msg = f"<b>🎯 MASZYNA ZYSKU: MASTER AKO ({r} zdarzenia) 🎯</b>\n\n"
                     for idx, item in enumerate(combo, 1):
                         msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
-                    msg += f"\n📊 <b>Kurs Łączny: {total_odds:.2f}</b>\n💎 <i>Cel: Betclic (BEZ PODATKU)[span_1](start_span)[span_1](end_span)</i>"
+                    msg += f"\n📊 <b>Kurs Łączny: {total_odds:.2f}</b>\n💎 <i>Cel: Betclic (BEZ PODATKU)</i>"
                     
                     send_telegram_message(msg)
                     generated_akos += 1
@@ -182,22 +174,30 @@ def run_analysis_cycle(reason="Harmonogram"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        run_analysis_cycle(reason="Start systemu")
         
-        last_slot = None
+        # UWAGA: Usunięto skan natychmiastowy po starcie, żeby Railway przy restartach nie generował śmieci!
+        print("[SYSTEM] Bot oczekuje na zaplanowane okna czasowe (08:00 i 20:00)...")
+        
+        last_run_date_slot = None
+        
         while True:
             try:
                 now = datetime.now()
-                current_str = now.strftime("%H:%M")
+                current_time_str = now.strftime("%H:%M")
+                current_date_str = now.strftime("%Y-%m-%d")
                 
-                if current_str in SCHEDULED_HOURS and last_slot != current_str:
-                    run_analysis_cycle(reason=f"Slot {current_str}")
-                    last_slot = current_str
+                # Unikalny identyfikator slotu (np. "2026-11-07_20:00")
+                current_slot_id = f"{current_date_str}_{current_time_str}"
                 
-                if current_str not in SCHEDULED_HOURS:
-                    last_slot = None
+                if current_time_str in SCHEDULED_HOURS and last_run_date_slot != current_slot_id:
+                    run_analysis_cycle(reason=f"Slot {current_time_str}")
+                    last_run_date_slot = current_slot_id
+                
+                if current_time_str not in SCHEDULED_HOURS:
+                    # Resetujemy slot, gdy minie wyznaczona minuta
+                    pass
                     
             except Exception as e:
                 print(f"[CRITICAL] Błąd pętli: {e}")
                 
-            time.sleep(30)
+            time.sleep(30) # Sprawdzanie zegara co 30 sekund
