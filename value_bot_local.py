@@ -3,56 +3,73 @@ import time
 import sqlite3
 import requests
 from datetime import datetime
+from itertools import combinations
 
-# --- PRAWIDŁOWE POBIERANIE ZMIENNYCH Z KLUCZAMI ZE SCREENÓW I KOMPLETNYM TOKENEM ---
+# --- KONFIGURACJA MASZYNY ZYSKU ---
 API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Sztywne godziny skanowania: 08:00 (dla meczów na dzień) oraz 20:00 (dla meczów na nockę)
+# Harmonogram: 2 razy dziennie dla optymalizacji darmowego limitu API
 SCHEDULED_HOURS = ["08:00", "20:00"]
 
-# Pełna lista dyscyplin i lig sportowych (piłka nożna, koszykówka, hokej)
+# Rozszerzona baza dyscyplin pod kątem maszynki zysku (Piłka, Kosz, Hokej, Tenis, Baseball)
 SPORTS_TO_CHECK = [
-    "soccer_epl",                  # Premier League (Anglia)
-    "soccer_spain_la_liga",        # La Liga (Hiszpania)
-    "soccer_germany_bundesliga",    # Bundesliga (Niemcy)
-    "soccer_italy_serie_a",        # Serie A (Włochy)
-    "soccer_france_ligue_one",     # Ligue 1 (Francja)
-    "basketball_nba",              # NBA (USA / Nocka)
-    "basketball_euroleague",       # Euroliga (Europa)
-    "icehockey_nhl"                # NHL (USA / Nocka)
+    "soccer_epl",                  # Piłka nożna: Premier League
+    "soccer_spain_la_liga",        # Piłka nożna: La Liga
+    "soccer_germany_bundesliga",    # Piłka nożna: Bundesliga
+    "soccer_italy_serie_a",        # Piłka nożna: Serie A
+    "soccer_france_ligue_one",     # Piłka nożna: Ligue 1
+    "basketball_nba",              # Koszykówka: NBA
+    "basketball_euroleague",       # Koszykówka: Euroliga
+    "icehockey_nhl",               # Hokej: NHL
+    "tennis_atp_aus_open",         # Tenis: ATP (lub bieżący turniej)
+    "baseball_mlb"                 # Baseball: MLB
 ]
 
+# Parametry żelaznej strategii AKO (pewniaczki)
+MIN_ODDS_SINGLE = 1.12
+MAX_ODDS_SINGLE = 1.48
+MIN_AKO_TOTAL = 2.00    # Dolna granica pod Betclic Bez Podatku
+MAX_AKO_TOTAL = 2.50    # Górna granica dla maksymalnego bezpieczeństwa
+MAX_AKO_EVENTS = 3      # Maksymalnie 3 zdarzenia na taśmie
+
 def verify_environment():
-    """Weryfikuje poprawność załadowania kluczy ze środowiska uruchomieniowego."""
     if not API_KEY:
-        print("[CRITICAL ERROR] Zmienna ODDS_API_KEY nie została odnaleziona!")
+        print("[CRITICAL ERROR] Brak klucza API!")
         return False
-    
-    masked_key = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM OK] Załadowano ODDS_API_KEY: {masked_key} (Długość: {len(API_KEY)})")
-    print(f"[SYSTEM OK] Skanowanie zaplanowane na godziny: {', '.join(SCHEDULED_HOURS)}")
-    print(f"[SYSTEM OK] Aktywne ligi ({len(SPORTS_TO_CHECK)}): {', '.join(SPORTS_TO_CHECK)}")
+    masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
+    print(f"[SYSTEM OK] Maszyna wystartowała. API Key: {masked}")
     return True
 
 def init_db():
-    """Tworzy strukturę bazy danych SQLite dla weryfikacji duplikatów zdarzeń."""
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bets (
+        CREATE TABLE IF NOT EXISTS sent_akos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sport TEXT,
-            match_name TEXT,
+            ako_signature TEXT UNIQUE,
             timestamp TEXT
         )
     """)
     conn.commit()
     conn.close()
 
+def send_telegram_message(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"[TELEGRAM ERROR] {e}")
+
 def fetch_odds_for_sport(sport):
-    """Pobiera dane rynkowe z REST API z obsługą kodów błędów i przekroczeń limitów."""
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
     params = {
         "apiKey": API_KEY,
@@ -60,66 +77,108 @@ def fetch_odds_for_sport(sport):
         "markets": "h2h",
         "oddsFormat": "decimal"
     }
-    
     try:
         response = requests.get(url, params=params, timeout=15)
-        if response.status_code == 401:
-            print(f"[API ERROR 401] Błąd autoryzacji dla {sport}. Odpowiedź: {response.text}")
-            return []
-        elif response.status_code != 200:
-            print(f"[API ERROR {response.status_code}] Nieoczekiwany status dla {sport}: {response.text}")
-            return []
-        
-        return response.json()
-    except Exception as error:
-        print(f"[EXCEPTION] Wyjątek podczas komunikacji sieciowej dla {sport}: {error}")
+        if response.status_code == 200:
+            return response.json()
+        print(f"[API ERROR {response.status_code}] Sport {sport}")
+        return []
+    except Exception as e:
+        print(f"[EXCEPTION] {sport}: {e}")
         return []
 
-def run_analysis_cycle(reason="Zaplanowany cykl"):
-    """Wykonuje pojedynczą iterację skanowania rynku bukmacherskiego dla wszystkich lig."""
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"\n[CYKL] Uruchomienie analizy ({reason}): {current_time}")
-    total_candidates = 0
+def extract_favorites(events, sport_name):
+    favorites = []
+    for event in events:
+        home_team = event.get('home_team')
+        away_team = event.get('away_team')
+        commence_time = event.get('commence_time', '')
+        
+        for bookmaker in event.get('bookmakers', []):
+            for market in bookmaker.get('markets', []):
+                if market.get('key') == 'h2h':
+                    outcomes = market.get('outcomes', [])
+                    for outcome in outcomes:
+                        name = outcome.get('name')
+                        price = outcome.get('price')
+                        
+                        if MIN_ODDS_SINGLE <= price <= MAX_ODDS_SINGLE:
+                            favorites.append({
+                                'match': f"{home_team} vs {away_team}",
+                                'selection': name,
+                                'odds': price,
+                                'sport': sport_name,
+                                'time': commence_time
+                            })
+                    break
+            break
+    return favorites
+
+def run_analysis_cycle(reason="Harmonogram"):
+    print(f"\n[CYKL] Skanowanie rynku ({reason}): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    all_favorites = []
     
     for sport in SPORTS_TO_CHECK:
-        print(f"[ANALIZA] Pobieranie kursów dla: {sport}")
-        odds_data = fetch_odds_for_sport(sport)
+        events = fetch_odds_for_sport(sport)
+        favs = extract_favorites(events, sport)
+        all_favorites.extend(favs)
+        time.sleep(1)
         
-        if odds_data:
-            print(f"[ANALIZA] Pomyślnie pobrano {len(odds_data)} zdarzeń dla {sport}.")
-        else:
-            print(f"[ANALIZA] Brak danych lub niepowodzenie zapytania dla {sport}.")
-            
-        time.sleep(1.5)  # Ochronny odstęp czasu między zapytaniami HTTP
-        
-    print(f"[ANALIZA] Znaleziono łącznie {total_candidates} kandydatów SOLO i 0 nóg AKO.")
-    print(f"[CYKL] Zakończony pomyślnie. Następne skanowanie zgodnie z harmonogramem (08:00 / 20:00).")
+    print(f"[ANALIZA] Wyłapano {len(all_favorites)} stabilnych faworytów.")
+    
+    generated_akos = 0
+    conn = sqlite3.connect("monsters_bets.db")
+    cursor = conn.cursor()
+    
+    for r in range(2, MAX_AKO_EVENTS + 1):
+        for combo in combinations(all_favorites, r):
+            matches = [item['match'] for item in combo]
+            if len(set(matches)) != len(matches):
+                continue
+                
+            total_odds = 1.0
+            for item in combo:
+                total_odds *= item['odds']
+                
+            if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
+                signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
+                
+                cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (signature,))
+                if cursor.fetchone() is None:
+                    cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", 
+                                   (signature, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                    conn.commit()
+                    
+                    msg = f"<b>🎯 MASZYNA ZYSKU: MASTER AKO ({r} zdarzenia) 🎯</b>\n\n"
+                    for idx, item in enumerate(combo, 1):
+                        msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
+                    msg += f"\n📊 <b>Kurs Łączny: {total_odds:.2f}</b>\n💎 <i>Cel: Betclic (BEZ PODATKU)[span_1](start_span)[span_1](end_span)</i>"
+                    
+                    send_telegram_message(msg)
+                    generated_akos += 1
+                    
+    conn.close()
+    print(f"[AKO] Wypuszczono na kanał: {generated_akos} kuponów.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
+        run_analysis_cycle(reason="Start systemu")
         
-        # 1. Wykonaj pierwsze skanowanie natychmiast po starcie kontenera
-        run_analysis_cycle(reason="Inicjalizacja po starcie")
-        
-        last_run_slot = None
-        
-        # 2. Główna pętla oczekująca na zaplanowane godziny (08:00 oraz 20:00)
+        last_slot = None
         while True:
             try:
                 now = datetime.now()
-                current_time_str = now.strftime("%H:%M")
+                current_str = now.strftime("%H:%M")
                 
-                if current_time_str in SCHEDULED_HOURS and last_run_slot != current_time_str:
-                    run_analysis_cycle(reason=f"Harmonogram {current_time_str}")
-                    last_run_slot = current_time_str
+                if current_str in SCHEDULED_HOURS and last_slot != current_str:
+                    run_analysis_cycle(reason=f"Slot {current_str}")
+                    last_slot = current_str
                 
-                if current_time_str not in SCHEDULED_HOURS:
-                    last_run_slot = None
+                if current_str not in SCHEDULED_HOURS:
+                    last_slot = None
                     
-            except Exception as global_error:
-                print(f"[CRITICAL ERROR] Wyjątek w pętli głównej skryptu: {global_error}")
-            
-            time.sleep(30)  # Sprawdzaj czas co 30 sekund
-    else:
-        print("[FATAL ERROR] Przerwanie pracy skryptu z powodu braku wymaganych zmiennych środowiskowych.")
+            except Exception as e:
+                print(f"[CRITICAL] Błąd pętli: {e}")
+                
+            time.sleep(30)
