@@ -2,7 +2,7 @@ import os
 import time
 import sqlite3
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
 # --- KONFIGURACJA MASZYNY ZYSKU ---
@@ -10,11 +10,12 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Ścisłe godziny VIP (06:25 oraz 18:25 czasu polskiego) - ŻADNYCH INNYCH
-SCHEDULED_HOURS = ["06:25", "18:25"]
+# Harmonogram UTC (05:25 UTC = 06:25 w Polsce | 17:25 UTC = 18:25 w Polsce)
+SCHEDULED_HOURS_UTC = ["05:25", "17:25"]
 
-# Pełna baza dyscyplin pod maszynkę zysku
+# Pełna baza dyscyplin WRAZ Z NFL pod maszynkę zysku
 SPORTS_TO_CHECK = [
+    "americanfootball_nfl",        # Dopisana NFL do łapania faworytów
     "soccer_epl",                  
     "soccer_spain_la_liga",        
     "soccer_germany_bundesliga",    
@@ -41,7 +42,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM VIP OK] Chiński analityczny mózg wystartował. API Key: {masked}")
+    print(f"[SYSTEM VIP OK] Chiński analityczny mózg wystartował (NFL + Natychmiastowy Skan). API Key: {masked}")
     return True
 
 def init_db():
@@ -67,9 +68,13 @@ def send_telegram_message(text):
         "parse_mode": "HTML"
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("[TELEGRAM] Wiadomość wysłana pomyślnie.")
+        else:
+            print(f"[TELEGRAM ERROR {response.status_code}] {response.text}")
     except Exception as e:
-        print(f"[TELEGRAM ERROR] {e}")
+        print(f"[TELEGRAM EXCEPTION] {e}")
 
 def fetch_odds_for_sport(sport):
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
@@ -82,7 +87,9 @@ def fetch_odds_for_sport(sport):
     try:
         response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            print(f"[API] Sport {sport}: pobrano {len(data)} zdarzeń.")
+            return data
         print(f"[API ERROR {response.status_code}] Sport {sport}")
         return []
     except Exception as e:
@@ -109,15 +116,18 @@ def calculate_stake_and_confidence(combo, total_odds):
 def extract_favorites(events, sport_name):
     favorites = []
     seen_matches = set()
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     max_allowed_date = now + timedelta(hours=48)
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
         event_time = parse_iso_time(commence_time_str)
         
-        if event_time and (event_time < now or event_time > max_allowed_date):
-            continue
+        if event_time:
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+            if event_time < now or event_time > max_allowed_date:
+                continue
             
         home_team = event.get('home_team')
         away_team = event.get('away_team')
@@ -147,8 +157,8 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Harmonogram VIP"):
-    print(f"\n[CYKL VIP] Skanowanie rynku ({reason}): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+def run_analysis_cycle(reason="Harmonogram VIP UTC"):
+    print(f"\n[CYKL VIP] Skanowanie rynku ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     all_favorites = []
     
     for sport in SPORTS_TO_CHECK:
@@ -157,7 +167,7 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Wyłapano {len(all_favorites)} stabilnych faworytów.")
+    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} stabilnych faworytów ze wszystkich dyscyplin.")
     
     candidates_to_send = []
     
@@ -197,7 +207,7 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
             
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is None:
-            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
             conn.commit()
             
@@ -224,24 +234,30 @@ def run_analysis_cycle(reason="Harmonogram VIP"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM VIP] Bot gotowy. Harmonogram: 06:25 oraz 18:25 (dokładnie 2 razy na dobę)...")
+        print("[SYSTEM VIP] Bot wystartował. Odpalam NATYCHMIASTOWY SKAN na życzenie użytkownika...")
+        
+        # WYMUSZAMY SKAN OD RAZU PO STARCIE, ŻEBYŚ OD RAZU DOSTAŁ PICKELKI NA TELEGRAM!
+        try:
+            run_analysis_cycle(reason="Wymuszony skan startowy (Przed kościołem)")
+        except Exception as e:
+            print(f"[ERROR STARTOWY SKAN] {e}")
+            
+        print("[SYSTEM VIP] Skan startowy zakończony. Przechodzę w tryb automatycznego harmonogramu UTC...")
         
         last_run_date_slot = None
         
         while True:
             try:
-                now = datetime.now()
-                current_time_str = now.strftime("%H:%M")
-                current_date_str = now.strftime("%Y-%m-%d")
+                now_utc = datetime.now(timezone.utc)
+                current_time_str = now_utc.strftime("%H:%M")
+                current_date_str = now_utc.strftime("%Y-%m-%d")
                 current_slot_id = f"{current_date_str}_{current_time_str}"
                 
-                # Uruchamia się TYLKO wtedy, gdy bieżący czas pasuje do harmonogramu 
-                # ORAZ ten konkretny slot czasowy nie był jeszcze w tym dniu uruchamiany
-                if current_time_str in SCHEDULED_HOURS and last_run_date_slot != current_slot_id:
-                    run_analysis_cycle(reason=f"Slot VIP {current_time_str}")
+                if current_time_str in SCHEDULED_HOURS_UTC and last_run_date_slot != current_slot_id:
+                    run_analysis_cycle(reason=f"Slot VIP UTC {current_time_str}")
                     last_run_date_slot = current_slot_id
                 
             except Exception as e:
                 print(f"[CRITICAL] Błąd pętli głównej: {e}")
                 
-            time.sleep(15) # Sprawdzanie zegara co 15 sekund dla pełnej precyzji minutowej
+            time.sleep(15)
