@@ -5,15 +5,12 @@ import requests
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
-# --- KONFIGURACJA MASZYNY ZYSKU ---
+# --- KONFIGURACJA MASZYNY DO ZARABIANIA PITOSU ---
 API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Harmonogram UTC (05:25 UTC = 06:25 w Polsce | 17:25 UTC = 18:25 w Polsce)
-SCHEDULED_HOURS_UTC = ["05:25", "17:25"]
-
-# Pełna baza dyscyplin WRAZ Z NFL pod maszynkę zysku
+# Pełna baza dyscyplin pod maksymalny zysk (wraz z NFL, piłką i koszem)
 SPORTS_TO_CHECK = [
     "americanfootball_nfl",        
     "soccer_epl",                  
@@ -28,22 +25,22 @@ SPORTS_TO_CHECK = [
     "baseball_mlb"                 
 ]
 
-# Zmodyfikowane parametry – szerszy korytarz, żeby dowozić 8-10 kuponów dziennie
+# Agresywne parametry pod AKO3 (wysokie prawdopodobieństwo + Betclic Bez Podatku)
 MIN_ODDS_SINGLE = 1.08
 MAX_ODDS_SINGLE = 1.60
-MIN_AKO_TOTAL = 1.90    # Minimalny kurs łączny
-MAX_AKO_TOTAL = 2.70    # Górna granica bezpiecznego AKO
-MAX_AKO_EVENTS = 3      # Maksymalnie 3 zdarzenia na taśmie
+MIN_AKO_TOTAL = 1.95
+MAX_AKO_TOTAL = 2.70
+MAX_AKO_EVENTS = 3      # Zawsze precyzyjne AKO3
 
-# Zwiększamy limit publikacji w jednym cyklu do 10 kuponów!
-MAX_AKO_PER_CYCLE = 10
+# Wysoki limit dropów na cykl – maszyna ma wypluwać tyle, ile znajdzie perełek!
+MAX_AKO_PER_CYCLE = 15
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM VIP OK] Chiński analityczny mózg wystartował (High-Volume Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 wystartowała (Tryb co 3h). API Key: {masked}")
     return True
 
 def init_db():
@@ -71,7 +68,7 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("[TELEGRAM] Wiadomość wysłana pomyślnie.")
+            print("[TELEGRAM] Kupon wysłany na kanał.")
         else:
             print(f"[TELEGRAM ERROR {response.status_code}] {response.text}")
     except Exception as e:
@@ -88,9 +85,7 @@ def fetch_odds_for_sport(sport):
     try:
         response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
-            data = response.json()
-            print(f"[API] Sport {sport}: pobrano {len(data)} zdarzeń.")
-            return data
+            return response.json()
         print(f"[API ERROR {response.status_code}] Sport {sport}")
         return []
     except Exception as e:
@@ -107,12 +102,12 @@ def parse_iso_time(time_str):
 
 def calculate_stake_and_confidence(combo, total_odds):
     avg_odds = sum(item['odds'] for item in combo) / len(combo)
-    if avg_odds <= 1.25 and len(combo) == 2:
-        return "3j (75 zł)", "💎💎💎 Masywne Value / Najwyższa pewność"
+    if avg_odds <= 1.25 and len(combo) == 3:
+        return "3j (75 zł)", "💎💎💎 Maszyna Pitosu / Najwyższa pewność"
     elif avg_odds <= 1.35:
         return "2j (50 zł)", "⭐⭐⭐ Wysoka pewność"
     else:
-        return "1j (25 zł)", "⭐⭐ Standardowy pewniak"
+        return "1j (25 zł)", "⭐⭐ Agresywne Value"
 
 def extract_favorites(events, sport_name):
     favorites = []
@@ -158,8 +153,8 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Harmonogram VIP UTC"):
-    print(f"\n[CYKL VIP] Skanowanie rynku ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+def run_analysis_cycle(reason="Cykl 3-godzinny"):
+    print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     all_favorites = []
     
     for sport in SPORTS_TO_CHECK:
@@ -168,96 +163,98 @@ def run_analysis_cycle(reason="Harmonogram VIP UTC"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} faworytów.")
+    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} potencjalnych zdarzeń.")
     
     candidates_to_send = []
     
-    for r in range(2, MAX_AKO_EVENTS + 1):
-        for combo in combinations(all_favorites, r):
-            matches = [item['match'] for item in combo]
-            if len(set(matches)) != len(matches):
-                continue
-                
-            total_odds = 1.0
-            for item in combo:
-                total_odds *= item['odds']
-                
-            if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
-                signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
-                candidates_to_send.append({
-                    'signature': signature,
-                    'combo': combo,
-                    'total_odds': total_odds,
-                    'r': r,
-                    'matches': matches
-                })
+    # Rygorystycznie szukamy idealnych AKO3 (r = 3)
+    for combo in combinations(all_favorites, MAX_AKO_EVENTS):
+        matches = [item['match'] for item in combo]
+        
+        # 100% unikalności: żadne wydarzenie nie może się powtórzyć na tym samym kuponie
+        if len(set(matches)) != len(matches):
+            continue
+            
+        total_odds = 1.0
+        for item in combo:
+            total_odds *= item['odds']
+            
+        if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
+            signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
+            candidates_to_send.append({
+                'signature': signature,
+                'combo': combo,
+                'total_odds': total_odds,
+                'matches': matches
+            })
                 
     candidates_to_send.sort(key=lambda x: x['total_odds'], reverse=True)
     
     generated_akos = 0
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
-    used_matches_in_cycle = set()
+    
+    # Żelazna zasada w cyklu: 1 wydarzenie może być użyte TYLKO na jednym kuponie!
+    used_matches_in_this_run = set()
     
     for cand in candidates_to_send:
         if generated_akos >= MAX_AKO_PER_CYCLE:
             break
             
-        if any(m in used_matches_in_cycle for m in cand['matches']):
+        # Sprawdzamy czy którekolwiek zdarzenie z taśmy było już użyte w tym rzucie
+        if any(m in used_matches_in_this_run for m in cand['matches']):
             continue
             
+        # Sprawdzamy w bazie historycznej, czy ta taśma już kiedyś leciała
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is None:
             now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
             conn.commit()
             
+            # Blokujemy te mecze do końca tego cyklu
             for m in cand['matches']:
-                used_matches_in_cycle.add(m)
+                used_matches_in_this_run.add(m)
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>🔥 VIP MASTER AKO ({cand['r']} ZDARZENIA) 🔥</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
             msg += f"\n📊 <b>Kurs Łączny: {cand['total_odds']:.2f}</b>"
-            msg += f"\n🎯 <b>Analiza Pewności:</b> {confidence}"
-            msg += f"\n💰 <b>Zalecana Stawka: {stake}</b>"
-            msg += f"\n💎 <i>Betclic (BEZ PODATKU) | System Monster's Bets</i>"
+            msg += f"\n🎯 <b>Status:</b> {confidence}"
+            msg += f"\n💰 <b>Stawka: {stake}</b>"
+            msg += f"\n💎 <i>Betclic (BEZ PODATKU) | Let's Make That Cash</i>"
             
             send_telegram_message(msg)
             generated_akos += 1
             
     conn.close()
-    print(f"[AKO VIP] Wypuszczono na kanał: {generated_akos} unikalnych kuponów VIP.")
+    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych kuponów AKO3.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM VIP] Bot wystartował. Odpalam natychmiastowy skan wysokiej objętości...")
+        print("[SYSTEM PITOS] Maszyna uruchomiona. Robię natychmiastowy skan startowy, a potem lecimy cyklicznie co 3 godziny...")
         
+        # Pierwszy zrzut od razu po starcie
         try:
-            run_analysis_cycle(reason="Wymuszony skan high-volume (Przed kościołem)")
+            run_analysis_cycle(reason="Start Maszyny Pitosu")
         except Exception as e:
-            print(f"[ERROR STARTOWY SKAN] {e}")
+            print(f"[ERROR START] {e}")
             
-        print("[SYSTEM VIP] Skan zakończony. Przechodzę w tryb automatyczny...")
-        
-        last_run_date_slot = None
+        # Pętla ciągła: sprawdza upływ czasu i odpala się co dokładnie 3 godziny (10800 sekund)
+        last_run_timestamp = time.time()
+        THREE_HOURS_IN_SECONDS = 3 * 3600
         
         while True:
             try:
-                now_utc = datetime.now(timezone.utc)
-                current_time_str = now_utc.strftime("%H:%M")
-                current_date_str = now_utc.strftime("%Y-%m-%d")
-                current_slot_id = f"{current_date_str}_{current_time_str}"
-                
-                if current_time_str in SCHEDULED_HOURS_UTC and last_run_date_slot != current_slot_id:
-                    run_analysis_cycle(reason=f"Slot VIP UTC {current_time_str}")
-                    last_run_date_slot = current_slot_id
-                
+                current_time = time.time()
+                if current_time - last_run_timestamp >= THREE_HOURS_IN_SECONDS:
+                    run_analysis_cycle(reason="Cykl automatyczny co 3h")
+                    last_run_timestamp = current_time
             except Exception as e:
                 print(f"[CRITICAL] Błąd pętli głównej: {e}")
                 
-            time.sleep(15)
+            time.sleep(30)
