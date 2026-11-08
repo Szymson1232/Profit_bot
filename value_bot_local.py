@@ -15,7 +15,7 @@ SCHEDULED_HOURS_UTC = ["05:25", "17:25"]
 
 # Pełna baza dyscyplin WRAZ Z NFL pod maszynkę zysku
 SPORTS_TO_CHECK = [
-    "americanfootball_nfl",        # Dopisana NFL do łapania faworytów
+    "americanfootball_nfl",        
     "soccer_epl",                  
     "soccer_spain_la_liga",        
     "soccer_germany_bundesliga",    
@@ -28,21 +28,22 @@ SPORTS_TO_CHECK = [
     "baseball_mlb"                 
 ]
 
-# Parametry żelaznej strategii VIP AKO
-MIN_ODDS_SINGLE = 1.10
-MAX_ODDS_SINGLE = 1.52
-MIN_AKO_TOTAL = 2.00    # Dolna granica pod Betclic Bez Podatku
-MAX_AKO_TOTAL = 2.55    # Górna granica bezpieczeństwa
+# Zmodyfikowane parametry – szerszy korytarz, żeby dowozić 8-10 kuponów dziennie
+MIN_ODDS_SINGLE = 1.08
+MAX_ODDS_SINGLE = 1.60
+MIN_AKO_TOTAL = 1.90    # Minimalny kurs łączny
+MAX_AKO_TOTAL = 2.70    # Górna granica bezpiecznego AKO
 MAX_AKO_EVENTS = 3      # Maksymalnie 3 zdarzenia na taśmie
 
-MAX_AKO_PER_CYCLE = 5
+# Zwiększamy limit publikacji w jednym cyklu do 10 kuponów!
+MAX_AKO_PER_CYCLE = 10
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM VIP OK] Chiński analityczny mózg wystartował (NFL + Natychmiastowy Skan). API Key: {masked}")
+    print(f"[SYSTEM VIP OK] Chiński analityczny mózg wystartował (High-Volume Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -167,7 +168,7 @@ def run_analysis_cycle(reason="Harmonogram VIP UTC"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} stabilnych faworytów ze wszystkich dyscyplin.")
+    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} faworytów.")
     
     candidates_to_send = []
     
@@ -234,15 +235,14 @@ def run_analysis_cycle(reason="Harmonogram VIP UTC"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM VIP] Bot wystartował. Odpalam NATYCHMIASTOWY SKAN na życzenie użytkownika...")
+        print("[SYSTEM VIP] Bot wystartował. Odpalam natychmiastowy skan wysokiej objętości...")
         
-        # WYMUSZAMY SKAN OD RAZU PO STARCIE, ŻEBYŚ OD RAZU DOSTAŁ PICKELKI NA TELEGRAM!
         try:
-            run_analysis_cycle(reason="Wymuszony skan startowy (Przed kościołem)")
+            run_analysis_cycle(reason="Wymuszony skan high-volume (Przed kościołem)")
         except Exception as e:
             print(f"[ERROR STARTOWY SKAN] {e}")
             
-        print("[SYSTEM VIP] Skan startowy zakończony. Przechodzę w tryb automatycznego harmonogramu UTC...")
+        print("[SYSTEM VIP] Skan zakończony. Przechodzę w tryb automatyczny...")
         
         last_run_date_slot = None
         
