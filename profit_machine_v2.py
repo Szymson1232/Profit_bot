@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.6 — Night betting selector with built-in Railway health-check server.
+# PITOS v5.7 — Night betting selector with health check server and fixed f-string syntax.
 
 import os
 import sys
@@ -24,7 +24,6 @@ API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
-# Railway automatycznie podstawia PORT dla aplikacji webowych
 PORT = int(os.getenv("PORT", "8080"))
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
@@ -39,7 +38,7 @@ MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "3.80"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.45"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "14")) # Ścisła nocka
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "14"))
 
 SPORT_ALLOWLIST = {
     s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby").split(",")
@@ -54,7 +53,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.6")
+log = logging.getLogger("pitos-v5.7")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -66,9 +65,9 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.6 is up and running!")
+        self.wfile.write(b"PITOS v5.7 is up and running!")
     def log_message(self, format, *args):
-        pass # Wyciszenie logów HTTP żeby nie śmiecić w konsoli
+        pass
 
 def start_health_server():
     try:
@@ -119,7 +118,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.6 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.7 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -247,7 +246,7 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.6 night scan cycle started...", flush=True)
+    print("-> PITOS v5.7 night scan cycle started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports found: {len(sports)}", flush=True)
 
@@ -327,4 +326,69 @@ def run_cycle():
         stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
         stake_pln = stake_u * 25
 
-        lines = [f"<b>🥷 PITOS v5.6 | {c_type} #{
+        # POPRAWIONA LINIJKA BEZ UCIĘCIA
+        lines = [f"<b>🥷 PITOS v5.7 | {c_type} #{sent+1}</b>", ""]
+        for idx, item in enumerate(coupon["combo"], 1):
+            ev_esc = html.escape(item["event"])
+            sel_esc = html.escape(item["selection"])
+            sp_esc = html.escape(item["sport"])
+            kick = item["commence"].strftime("%d.%m %H:%M UTC")
+            lines.append(f"{idx}. <b>{ev_esc}</b>\n   Typ: <i>{sel_esc}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {sp_esc} | {kick}")
+
+        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {stake_u}j ({stake_pln} zł)</b>"])
+        msg = "\n".join(lines)
+        c_id = coupon["signature"][:24]
+
+        try:
+            with get_db() as conn:
+                now_str = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "INSERT INTO coupons (coupon_id, signature, message, status, created_at) VALUES (?, ?, ?, 'sent', ?)",
+                    (c_id, coupon["signature"], msg, now_str)
+                )
+                for item in coupon["combo"]:
+                    conn.execute(
+                        "INSERT INTO sent_events (event_id, sport_key, event_name, coupon_id, status, created_at) VALUES (?, ?, ?, ?, 'sent', ?)",
+                        (item["event_id"], item["sport"], item["event"], c_id, now_str)
+                    )
+
+            telegram_send(msg)
+            MEM_SIGNATURES.add(coupon["signature"])
+            for eid in coupon["event_ids"]:
+                MEM_EVENTS.add(eid)
+            used_in_cycle.update(coupon["event_ids"])
+            sent += 1
+            print(f"-> Published {c_type} coupon {c_id} successfully!", flush=True)
+        except Exception as e:
+            print(f"-> Failed to save/send coupon {c_id}: {e}", flush=True)
+
+    print(f"-> Scan cycle finished. Sent {sent} coupons.", flush=True)
+
+
+# ================= MAIN =================
+def main():
+    print("-> PITOS v5.7 starting up...", flush=True)
+    if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("-> CRITICAL: Missing environment variables!", flush=True)
+        sys.exit(1)
+
+    t = threading.Thread(target=start_health_server, daemon=True)
+    t.start()
+
+    init_db()
+    print(f"-> PITOS v5.7 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
+
+    while True:
+        start = time.monotonic()
+        try:
+            run_cycle()
+        except Exception as e:
+            print(f"-> Cycle crashed with error: {e}", flush=True)
+
+        elapsed = time.monotonic() - start
+        sleep_time = max(30, SCAN_INTERVAL - int(elapsed))
+        print(f"-> Sleeping for {sleep_time} seconds...", flush=True)
+        time.sleep(sleep_time)
+
+if __name__ == "__main__":
+    main()
