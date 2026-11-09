@@ -287,3 +287,58 @@ def find_betclic_bookmaker(event):
 
 
 def extract_candidate(event, sport_key):
+    event_id = event.get("id")
+    if not event_id or event_already_used(event_id):
+        return None
+
+    commence = parse_time(event.get("commence_time"))
+    if commence is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    if commence < now - timedelta(minutes=PAST_GRACE_MINUTES):
+        return None
+    if commence > now + timedelta(hours=LOOKAHEAD_HOURS):
+        return None
+
+    bookmaker = find_betclic_bookmaker(event)
+    if bookmaker is None:
+        return None
+
+    h2h = next((m for m in bookmaker.get("markets", []) if m.get("key") == "h2h"), None)
+    if not h2h:
+        return None
+
+    outcomes = h2h.get("outcomes", [])
+    valid_prices = []
+    for outcome in outcomes:
+        try:
+            price = float(outcome.get("price"))
+            if math.isfinite(price) and price > 1.0:
+                valid_prices.append((outcome.get("name", ""), price))
+        except (TypeError, ValueError):
+            continue
+
+    if len(valid_prices) < 2:
+        return None
+
+    raw_probs = [(name, price, 1.0 / price) for name, price in valid_prices]
+    probability_sum = sum(item[2] for item in raw_probs)
+    if probability_sum <= 0:
+        return None
+
+    home = event.get("home_team", "Unknown")
+    away = event.get("away_team", "Unknown")
+    event_name = f"{home} vs {away}"
+
+    choices = []
+    for selection, price, raw_prob in raw_probs:
+        normalized_prob = raw_prob / probability_sum
+        if MIN_SINGLE_ODDS <= price <= MAX_SINGLE_ODDS:
+            if normalized_prob >= MIN_MARKET_PROBABILITY:
+                choices.append({
+                    "event_id": event_id,
+                    "event": event_name,
+                    "selection": selection,
+                    "odds": price,
+                    "market_probability": normalized_
