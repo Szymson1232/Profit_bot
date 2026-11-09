@@ -5,8 +5,8 @@ import requests
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
-# --- NOWA MASZYNA PITiS v3 (FULL MARKET SCANNER) ---
-API_KEY = os.getenv("ODDS_API_KEY", "8d1345b2c03e9b352841ce36f6bde3ec")
+# --- NOWA MASZYNA PITiS v3 (FULL MARKET SCANNER + API QUOTA GUARD) ---
+API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
@@ -63,15 +63,33 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"[TELEGRAM EXCEPTION] {e}")
 
+def check_api_quota_and_warn(response_headers):
+    """Sprawdza nagłówki The Odds API i wysyła ostrzeżenie na Telegram, gdy limit się kończy."""
+    remaining = response_headers.get('x-requests-remaining')
+    used = response_headers.get('x-requests-used')
+    
+    if remaining is not None:
+        remaining_int = int(remaining)
+        print(f"[API QUOTA] Pozostało zapytań w miesiącu: {remaining_int} (Zużyto: {used})")
+        
+        # Jeśli zostało mniej niż 100 zapytań, wyślij alarm na Telegram!
+        if remaining_int <= 100:
+            warn_msg = (
+                f"🚨 <b>OSTRZEŻENIE: LIMIT API NA WYKOŃCZENIU!</b> 🚨\n\n"
+                f"Pozostało Ci zaledwie <b>{remaining_int}</b> zapytań do The Odds API.\n"
+                f"Odów klucz/pakiet jak najszybciej, żeby uniknąć przestoju maszynki!"
+            )
+            send_telegram_message(warn_msg)
+
 def get_all_available_sports():
-    """Pobiera automatycznie WSZYSTKE aktywne dyscypliny z API bez sztywnych listy!"""
     url = "https://api.the-odds-api.com/v4/sports/"
     params = {"apiKey": API_KEY}
     try:
         response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
+            # Sprawdzamy stan limitu w nagłówkach
+            check_api_quota_and_warn(response.headers)
             sports = response.json()
-            # Zwracamy klucze wszystkich sportów, które są aktualnie aktywne
             return [s['key'] for s in sports if s.get('active', True)]
         print(f"[API ERROR {response.status_code}] Nie udało się pobrać listy sportów")
         return []
@@ -117,7 +135,6 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    # Bierzemy mecze od teraz do 24 godzin w przód
     min_allowed_date = now - timedelta(minutes=30)
     max_allowed_date = now + timedelta(hours=24)
     
@@ -166,7 +183,6 @@ def run_analysis_cycle(reason="Cykl v3 Full Market"):
     print(f"[API] Znaleziono aktywnych dyscyplin w całym API: {len(all_sports)}")
     
     all_favorites = []
-    # Skanujemy pierwsze 25 aktywnych sportów z rynku żeby zmieścić się w limitach czasowych żądań
     for sport in all_sports[:25]:
         events = fetch_odds_for_sport(sport)
         favs = extract_favorites(events, sport)
@@ -252,10 +268,10 @@ def run_analysis_cycle(reason="Cykl v3 Full Market"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS v3] Start pełnego skanera rynku...")
+        print("[SYSTEM PITOS v3] Start pełnego skanera rynku z ochroną limitu...")
         
         try:
-            run_analysis_cycle(reason="Start v3")
+            run_analysis_cycle(reason="Start v3 z ochroną limitu")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
