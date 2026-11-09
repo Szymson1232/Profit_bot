@@ -27,10 +27,9 @@ import requests
 
 # ------------------------- CONFIGURATION -------------------------
 
-API_KEY = os.getenv("3daceb3cf3247c5445f38d2392c47cc9", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("-1004306783026", "").strip()
-
+API_KEY = os.getenv("ODDS_API_KEY", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 SQLITE_PATH = os.getenv("SQLITE_PATH", "/data/pitos_v4.db")
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
 MAX_SPORTS_PER_CYCLE = int(os.getenv("MAX_SPORTS_PER_CYCLE", "25"))
