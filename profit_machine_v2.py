@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
 # --- KONFIGURACJA MASZYNY DO ZARABIANIA PITOSU ---
-API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
+API_KEY = os.getenv("ODDS_API_KEY", "8d1345b2c03e9b352841ce36f6bde3ec")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
