@@ -180,4 +180,146 @@ def coupon_signature_exists(signature):
 
 # ------------------------- API / TELEGRAM -------------------------
 
-def api_get(path,
+def api_get(path, params=None):
+    if not API_KEY:
+        raise RuntimeError("Missing ODDS_API_KEY")
+
+    query = dict(params or {})
+    query["apiKey"] = API_KEY
+
+    response = session.get(
+        f"{API_BASE}{path}",
+        params=query,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    remaining = response.headers.get("x-requests-remaining")
+    used = response.headers.get("x-requests-used")
+
+    if remaining is not None:
+        log.info("The Odds API quota: remaining=%s used=%s", remaining, used)
+
+    if response.status_code != 200:
+        log.error("Odds API error %s: %s", response.status_code, response.text[:1000])
+        response.raise_for_status()
+
+    return response.json()
+
+
+def telegram_send(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+
+    url = f"{TELEGRAM_BASE}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+
+    response = session.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+
+    if response.status_code != 200 or not data.get("ok"):
+        raise RuntimeError(f"Telegram send failed: HTTP {response.status_code}, {str(data)[:500]}")
+
+    return data["result"].get("message_id")
+
+
+def verify_environment():
+    if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.error("Missing critical environment variables!")
+        return False
+    return True
+
+
+# ------------------------- DATA NORMALIZATION -------------------------
+
+def parse_time(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_active_sports():
+    sports = api_get("/sports/", {})
+    active = []
+    for sport in sports:
+        if not sport.get("active", True):
+            continue
+        key = sport.get("key", "")
+        if any(bad in key for bad in ["winner", "futures", "outrights", "championship"]):
+            continue
+        matched = any(allowed in key for allowed in SPORT_ALLOWLIST)
+        if SPORT_ALLOWLIST and matched:
+            active.append(sport)
+
+    if not active:
+        active = [
+            s for s in sports 
+            if s.get("active", True) and not any(b in s.get("key", "") for b in ["winner", "futures", "outrights", "championship"])
+        ]
+
+    return active[:MAX_SPORTS_PER_CYCLE]
+
+
+def fetch_sport_events(sport_key):
+    return api_get(
+        f"/sports/{sport_key}/odds/",
+        {"regions": "eu", "markets": "h2h", "oddsFormat": "decimal"},
+    )
+
+
+def find_betclic_bookmaker(event):
+    for bookmaker in event.get("bookmakers", []):
+        title = (bookmaker.get("title") or "").strip().lower()
+        key = (bookmaker.get("key") or "").strip().lower()
+        if BOOKMAKER_NAME in title or BOOKMAKER_NAME in key:
+            return bookmaker
+    return None
+
+
+def extract_candidate(event, sport_key):
+    event_id = event.get("id")
+    if not event_id or event_already_used(event_id):
+        return None
+
+    commence = parse_time(event.get("commence_time"))
+    if commence is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    if commence < now - timedelta(minutes=PAST_GRACE_MINUTES):
+        return None
+    if commence > now + timedelta(hours=LOOKAHEAD_HOURS):
+        return None
+
+    bookmaker = find_betclic_bookmaker(event)
+    if bookmaker is None:
+        return None
+
+    h2h = next((m for m in bookmaker.get("markets", []) if m.get("key") == "h2h"), None)
+    if not h2h:
+        return None
+
+    outcomes = h2h.get("outcomes", [])
+    valid_prices = []
+    for outcome in outcomes:
+        try:
+            price = float(outcome.get("price"))
+            if math.isfinite(price) and price > 1.0:
+                valid_prices.append((outcome.get("name", ""), price))
+        except (TypeError, ValueError):
+            continue
+
+    if len(valid_prices
