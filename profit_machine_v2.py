@@ -1,38 +1,8 @@
 #!/usr/bin/env python3
-# PITOS v5.31 — Strict tonight-only AKO2/AKO3 engine (16h lookahead).
+# PITOS v5.32 — Lightweight HTTP server fix for Railway log output.
 
 import os
 import sys
-import socket
-import threading
-
-PORT = int(os.getenv("PORT", "8080"))
-
-# ================= CRITICAL RAILWAY INSTANT BIND =================
-def instant_http_server():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("0.0.0.0", PORT))
-        s.listen(5)
-        print(f"-> Instant socket bound on port {PORT}", flush=True)
-        while True:
-            conn, addr = s.accept()
-            try:
-                request = conn.recv(1024)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.31 Active"
-                conn.sendall(response)
-            except Exception:
-                pass
-            finally:
-                conn.close()
-    except Exception as e:
-        print(f"-> Instant bind error: {e}", flush=True)
-
-t_bind = threading.Thread(target=instant_http_server, daemon=True)
-t_bind.start()
-
-# ================= RESZTA LOGIKI (ŁADOWANA PO BINDZIE) =================
 import time
 import math
 import sqlite3
@@ -43,9 +13,36 @@ import random
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 import requests
+import http.server
+import socketserver
+import threading
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
+# ================= RAILWAY INSTANT HEALTH CHECK =================
+PORT = int(os.getenv("PORT", "8080"))
+
+class HealthHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"PITOS v5.32 Active")
+    def log_message(self, format, *args):
+        pass
+
+def run_http_server():
+    try:
+        with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
+            print(f"-> Instant health server active on port {PORT}", flush=True)
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"-> Health server error: {e}", flush=True)
+
+t_http = threading.Thread(target=run_http_server, daemon=True)
+t_http.start()
+
+
+# ================= CONFIGURATION =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
@@ -62,7 +59,7 @@ MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.15"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "16"))  # ŚCISŁA KONTROLA: TYLKO NAJBLIŻSZE 16 GODZIN (DZISIAJ W NOCY)
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "16"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -72,12 +69,14 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.31")
+log = logging.getLogger("pitos-v5.32")
 session = requests.Session()
 
 MEM_EVENTS = set()
 MEM_SIGNATURES = set()
 
+
+# ================= DATABASE & PURGE =================
 def get_db():
     parent = os.path.dirname(os.path.abspath(SQLITE_PATH))
     if parent:
@@ -114,23 +113,33 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-    print("-> PITOS v5.31 DB initialized (Strict 16h tonight window).", flush=True)
+            
+    print("-> PITOS v5.32 DB initialized (AKO only mode).", flush=True)
 
+
+# ================= API & TELEGRAM =================
 def api_get(path, params=None):
     if not API_KEY:
         raise RuntimeError("Missing ODDS_API_KEY")
     p = dict(params or {})
     p["apiKey"] = API_KEY
+    
     time.sleep(0.3)
     res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
+    
     if res.status_code == 429:
+        log.warning("Rate limit hit (429). Sleeping for 10 seconds...")
         time.sleep(10)
         res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
+        
     if res.status_code != 200:
+        log.error("API Error %s: %s", res.status_code, res.text[:300])
         res.raise_for_status()
     return res.json()
 
 def telegram_send(msg):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        raise RuntimeError("Missing Telegram credentials")
     url = f"{TELEGRAM_BASE}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -141,8 +150,11 @@ def telegram_send(msg):
     res = session.post(url, json=payload, timeout=20)
     data = res.json() if res.status_code == 200 else {}
     if res.status_code != 200 or not data.get("ok"):
-        raise RuntimeError("Telegram failed")
+        raise RuntimeError(f"Telegram failed: {res.status_code}")
+    return data["result"]["message_id"]
 
+
+# ================= CORE LOGIC =================
 def parse_time(val):
     if not val:
         return None
@@ -179,8 +191,8 @@ def extract_candidates(sport_key):
         ev_id = ev.get("id")
         if not ev_id:
             continue
+
         commence = parse_time(ev.get("commence_time"))
-        # Rygorystyczny filtr: wyłącznie mecze w najbliższych 16 godzinach (dzisiejsza noc)
         if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
             continue
 
@@ -220,5 +232,31 @@ def extract_candidates(sport_key):
             continue
 
         ev_name = f"{home} vs {away}"
+
         for name, pr, raw_p in probs:
-            norm_p = raw_p
+            norm_p = raw_p / p_sum
+            if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
+                candidates.append({
+                    "event_id": ev_id,
+                    "event": ev_name,
+                    "selection": name,
+                    "odds": pr,
+                    "prob": norm_p,
+                    "sport": sport_key,
+                    "commence": commence
+                })
+    return candidates
+
+
+def run_cycle():
+    print("-> PITOS v5.32 AKO-only scan started...", flush=True)
+    sports = get_sports()
+    print(f"-> Active sports pooled: {len(sports)}", flush=True)
+
+    all_candidates = []
+    for sp in sports:
+        all_candidates.extend(extract_candidates(sp))
+
+    unique_map = {c["event_id"]: c for c in all_candidates}
+    candidates = list(unique_map.values())
+    print(f"-> Total unique candidates found: {
