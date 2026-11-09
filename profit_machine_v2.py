@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.29 — Hardcore instant socket bind for Railway Active status.
+# PITOS v5.30 — Pure AKO2/AKO3 engine optimized for tax-free multi-bets at 75 PLN stake.
 
 import os
 import sys
@@ -20,7 +20,7 @@ def instant_http_server():
             conn, addr = s.accept()
             try:
                 request = conn.recv(1024)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.29 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.30 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -55,13 +55,13 @@ SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
 MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "55"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
-MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
-MAX_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "2.80"))
+MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.15"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.50"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.10"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.15"))
 LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "36"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
@@ -72,7 +72,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.29")
+log = logging.getLogger("pitos-v5.30")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -114,7 +114,7 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-    print("-> PITOS v5.29 DB initialized.", flush=True)
+    print("-> PITOS v5.30 DB initialized (AKO only mode).", flush=True)
 
 def api_get(path, params=None):
     if not API_KEY:
@@ -234,7 +234,7 @@ def extract_candidates(sport_key):
     return candidates
 
 def run_cycle():
-    print("-> PITOS v5.29 scan started...", flush=True)
+    print("-> PITOS v5.30 AKO-only scan started...", flush=True)
     sports = get_sports()
     all_candidates = []
     for sp in sports:
@@ -250,18 +250,8 @@ def run_cycle():
     random.shuffle(candidates)
 
     valid_coupons = []
-    for c in candidates:
-        if c["odds"] >= 2.20:
-            sig = hashlib.sha256(f"{c['event_id']}:{c['selection']}".encode("utf-8")).hexdigest()
-            if sig not in MEM_SIGNATURES:
-                valid_coupons.append({
-                    "combo": [c],
-                    "total_odds": c["odds"],
-                    "signature": sig,
-                    "event_ids": [c["event_id"]],
-                    "type": "SINGIEL FULL"
-                })
 
+    # TYLKO AKO2 ORAZ AKO3 - ŻADNYCH SINGLI
     for r in [2, 3]:
         for combo in combinations(candidates, r):
             e_ids = [c["event_id"] for c in combo]
@@ -278,8 +268,11 @@ def run_cycle():
                     "total_odds": total_odds,
                     "signature": sig,
                     "event_ids": e_ids,
-                    "type": f"AKO{r} FULL"
+                    "type": f"AKO{r} ELITE"
                 })
+
+    random.shuffle(valid_coupons)
+    print(f"-> Valid AKO coupons generated: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -291,10 +284,12 @@ def run_cycle():
 
         tot = coupon["total_odds"]
         c_type = coupon["type"]
-        stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
-        stake_pln = stake_u * 25
+        
+        # SZTYWNA STAWKA 3j = 75 PLN POD ZAROBEK
+        stake_u = 3
+        stake_pln = 75
 
-        lines = [f"<b>🥷 PITOS v5.29 | {c_type} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.30 | {c_type} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -324,19 +319,34 @@ def run_cycle():
                 MEM_EVENTS.add(eid)
             used_in_cycle.update(coupon["event_ids"])
             sent += 1
-        except Exception:
-            pass
+            print(f"-> Published {c_type} coupon {c_id} successfully!", flush=True)
+        except Exception as e:
+            print(f"-> Failed to send coupon: {e}", flush=True)
+
+    print(f"-> Scan cycle finished. Sent {sent} coupons.", flush=True)
 
 def background_worker():
     init_db()
+    print("-> Background worker started. Triggering initial AKO scan...", flush=True)
+    try:
+        run_cycle()
+    except Exception as e:
+        print(f"-> Initial scan crashed: {e}", flush=True)
+
     while True:
+        start = time.monotonic()
         try:
             run_cycle()
-        except Exception:
-            pass
-        time.sleep(SCAN_INTERVAL)
+        except Exception as e:
+            print(f"-> Cycle crashed with error: {e}", flush=True)
+
+        elapsed = time.monotonic() - start
+        sleep_time = max(30, SCAN_INTERVAL - int(elapsed))
+        print(f"-> Sleeping for {sleep_time} seconds...", flush=True)
+        time.sleep(sleep_time)
 
 def main():
+    print("-> PITOS v5.30 starting up...", flush=True)
     t_worker = threading.Thread(target=background_worker, daemon=True)
     t_worker.start()
     while True:
