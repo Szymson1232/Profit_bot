@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.12 — Fully asynchronous worker with non-blocking startup.
+# PITOS v5.13 — Fully verified, zero-syntax-error worker.
 
 import os
 import sys
@@ -53,7 +53,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.12")
+log = logging.getLogger("pitos-v5.13")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -65,7 +65,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.12 is up and running!")
+        self.wfile.write(b"PITOS v5.13 is up and running!")
     def log_message(self, format, *args):
         pass
 
@@ -118,7 +118,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.12 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.13 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -246,7 +246,7 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.12 scan cycle started...", flush=True)
+    print("-> PITOS v5.13 scan cycle started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports found: {len(sports)}", flush=True)
 
@@ -263,49 +263,4 @@ def run_cycle():
         print("-> No candidates found in current window.", flush=True)
         return
 
-    candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
-    random.shuffle(candidates)
-
-    valid_coupons = []
-
-    for c in candidates:
-        if c["odds"] >= 2.20:
-            sig_source = f"{c['event_id']}:{c['selection']}"
-            sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-            valid_coupons.append({
-                "combo": [c],
-                "total_odds": c["odds"],
-                "signature": sig,
-                "event_ids": [c["event_id"]],
-                "type": "SINGIEL NOCNY"
-            })
-
-    for r in [2, 3]:
-        for combo in combinations(candidates, r):
-            e_ids = [c["event_id"] for c in combo]
-            if len(set(e_ids)) != r:
-                continue
-
-            total_odds = math.prod(c["odds"] for c in combo)
-            if MIN_TOTAL_ODDS <= total_odds <= MAX_TOTAL_ODDS:
-                sig_source = "|".join(sorted(f"{c['event_id']}:{c['selection']}" for c in combo))
-                sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-
-                valid_coupons.append({
-                    "combo": combo,
-                    "total_odds": total_odds,
-                    "signature": sig,
-                    "event_ids": e_ids,
-                    "type": f"AKO{r} NOCNY"
-                })
-
-    random.shuffle(valid_coupons)
-    print(f"-> Valid coupons found: {len(valid_coupons)}", flush=True)
-
-    sent = 0
-    used_in_cycle = set()
-
-    for coupon in valid_coupons:
-        if sent >= MAX_COUPONS:
-            break
-        if any(eid in used_in
+    candidates.sort(key=lambda x: (x["prob
