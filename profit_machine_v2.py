@@ -10,7 +10,7 @@ API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# W 100% sprawdzone i aktywne endpointy bez błędów 404
+# Dodajemy szerokie, globalne ligi piłkarskie i koszykarske, które grają codziennie o każdej porze
 SPORTS_TO_CHECK = [
     "soccer_epl",                  
     "soccer_spain_la_liga",        
@@ -18,14 +18,16 @@ SPORTS_TO_CHECK = [
     "soccer_italy_serie_a",        
     "soccer_france_ligue_one",     
     "basketball_euroleague",
-    "soccer_netherlands_eredivisie"
+    "soccer_netherlands_eredivisie",
+    "soccer_poland_ekstraklasa",
+    "basketball_nba"              # Włączamy chwilowo NBA, żeby przepchać popołudniowe/zaległe kursy
 ]
 
 # Parametry AKO3 pod Betclic Bez Podatku
-MIN_ODDS_SINGLE = 1.08
-MAX_ODDS_SINGLE = 1.65
-MIN_AKO_TOTAL = 1.95
-MAX_AKO_TOTAL = 2.80
+MIN_ODDS_SINGLE = 1.05
+MAX_ODDS_SINGLE = 1.80
+MIN_AKO_TOTAL = 1.90
+MAX_AKO_TOTAL = 3.00
 MAX_AKO_EVENTS = 3
 
 MAX_AKO_PER_CYCLE = 3
@@ -35,7 +37,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Turbo 15m Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Force Drop Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -109,14 +111,11 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    min_allowed_date = now - timedelta(hours=1)
-    max_allowed_date = now + timedelta(hours=36) # Zwiększamy horyzont do 36h, żeby złapać nadchodzące mecze
+    min_allowed_date = now - timedelta(hours=2)
+    max_allowed_date = now + timedelta(hours=48) # Szersze okno czasowe
     
-    banned_keywords = [
-        "Toronto", "Memphis", "Houston", "Denver", "Phoenix", 
-        "San Antonio", "Charlotte", "Cleveland", "Detroit", "Washington",
-        "Vikings", "Bills", "Rockets", "Nuggets", "Suns", "Spurs"
-    ]
+    # Minimalna czarna lista tylko na najbardziej oporne zespoły
+    banned_keywords = []
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -161,7 +160,7 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl 15-minutowy"):
+def run_analysis_cycle(reason="Cykl Force Drop"):
     print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
     all_favorites = []
@@ -171,7 +170,7 @@ def run_analysis_cycle(reason="Cykl 15-minutowy"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Pobrano czyste zdarzenia rynkowe: {len(all_favorites)}")
+    print(f"[ANALIZA] Pobrano zdarzenia rynkowe: {len(all_favorites)}")
     
     candidates_to_send = []
     
@@ -220,7 +219,7 @@ def run_analysis_cycle(reason="Cykl 15-minutowy"):
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (TURBO VALUE) 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (FORCE DROP) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -238,15 +237,15 @@ def run_analysis_cycle(reason="Cykl 15-minutowy"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie Turbo 15m...")
+        print("[SYSTEM PITOS] Start w trybie Force Drop...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start Turbo")
+            run_analysis_cycle(reason="Wymuszony start natychmiastowy")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
         last_run_timestamp = time.time()
-        FIFTEEN_MINUTES_IN_SECONDS = 15 * 60  # Skanowanie co 15 minut!
+        FIFTEEN_MINUTES_IN_SECONDS = 15 * 60
         
         while True:
             try:
