@@ -10,21 +10,23 @@ API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Zostawiamy tylko europejską piłkę nożną i Euroleague, żeby odciąć amerykańskie nocne NBA
+# Szeroka, elastyczna pula dyscyplin, które grają w ciągu dnia i wieczorem
 SPORTS_TO_CHECK = [
     "soccer_epl",                  
     "soccer_spain_la_liga",        
     "soccer_germany_bundesliga",    
     "soccer_italy_serie_a",        
     "soccer_france_ligue_one",     
-    "basketball_euroleague"       
+    "basketball_euroleague",       
+    "tennis_atp_challenger",       
+    "tennis_wta_challenger"
 ]
 
 # Parametry AKO3 pod Betclic Bez Podatku
 MIN_ODDS_SINGLE = 1.08
-MAX_ODDS_SINGLE = 1.60
+MAX_ODDS_SINGLE = 1.65
 MIN_AKO_TOTAL = 1.95
-MAX_AKO_TOTAL = 2.70
+MAX_AKO_TOTAL = 2.80
 MAX_AKO_EVENTS = 3
 
 MAX_AKO_PER_CYCLE = 5
@@ -34,7 +36,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Hard Clean Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Final Master Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -108,11 +110,10 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    # Okno operacyjne: tylko mecze w ciągu najbliższych 18 godzin
-    min_allowed_date = now
-    max_allowed_date = now + timedelta(hours=18)
+    # Elastyczne okno na najbliższe 24 godziny, żeby złapać dzisiejsze mecze popołudniowe/wieczorne
+    min_allowed_date = now - timedelta(hours=1)
+    max_allowed_date = now + timedelta(hours=24)
     
-    # Twarda czarna lista drużyn, które uporczywie wracały z nocy
     banned_keywords = [
         "Toronto", "Memphis", "Houston", "Denver", "Phoenix", 
         "San Antonio", "Charlotte", "Cleveland", "Detroit", "Washington",
@@ -133,7 +134,6 @@ def extract_favorites(events, sport_name):
         home_team = event.get('home_team', '')
         away_team = event.get('away_team', '')
         
-        # Jeśli nazwa drużyny zawiera cokolwiek z czarnej listy - odrzucamy natychmiast!
         if any(banned in home_team or banned in away_team for banned in banned_keywords):
             continue
             
@@ -173,7 +173,7 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Pobrano czyste europejskie zdarzenia: {len(all_favorites)}")
+    print(f"[ANALIZA] Pobrano świeże zdarzenia rynkowe: {len(all_favorites)}")
     
     candidates_to_send = []
     
@@ -222,7 +222,7 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (EUROPEAN VALUE) 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (MASTER VALUE) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -240,10 +240,10 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie Hard Clean Mode...")
+        print("[SYSTEM PITOS] Start w trybie Master Final...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start po czystce amerykańskiej")
+            run_analysis_cycle(reason="Wymuszony start ostateczny")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
