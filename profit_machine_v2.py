@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.17 — Strict anti-duplicate engine with NFL exclusion & team history memory.
+# PITOS v5.18 — Strict anti-NHL/NFL engine with auto-purge memory reset.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.17 Active")
+        self.wfile.write(b"PITOS v5.18 Active")
     def log_message(self, format, *args):
         pass
 
@@ -52,7 +52,7 @@ SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.80"))
+MAX_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "2.80"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
@@ -68,7 +68,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.17")
+log = logging.getLogger("pitos-v5.18")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -76,7 +76,7 @@ MEM_TEAMS = set()
 MEM_SIGNATURES = set()
 
 
-# ================= DATABASE =================
+# ================= DATABASE & PURGE =================
 def get_db():
     parent = os.path.dirname(os.path.abspath(SQLITE_PATH))
     if parent:
@@ -86,6 +86,14 @@ def get_db():
     return conn
 
 def init_db():
+    # Czścimy starą bazę przy każdym starcie, żeby całkowicie zresetować pamięć i zabić powtórki
+    if os.path.exists(SQLITE_PATH):
+        try:
+            os.remove(SQLITE_PATH)
+            print(f"-> Purged old database file {SQLITE_PATH} for a fresh start.", flush=True)
+        except Exception as e:
+            print(f"-> Failed to purge old DB: {e}", flush=True)
+
     with get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sent_events (
@@ -108,19 +116,8 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-        
-        cur = conn.cursor()
-        cur.execute("SELECT event_id, home_team, away_team FROM sent_events")
-        for row in cur.fetchall():
-            MEM_EVENTS.add(row[0])
-            if row[1]: MEM_TEAMS.add(row[1].strip().lower())
-            if row[2]: MEM_TEAMS.add(row[2].strip().lower())
             
-        cur.execute("SELECT signature FROM coupons")
-        for row in cur.fetchall():
-            MEM_SIGNATURES.add(row[0])
-            
-    print(f"-> PITOS v5.17 DB initialized. Loaded {len(MEM_EVENTS)} events, {len(MEM_TEAMS)} unique teams in memory.", flush=True)
+    print("-> PITOS v5.18 DB freshly initialized. Memory cleared.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -172,10 +169,11 @@ def get_sports():
         if not s.get("active", True):
             continue
         key = s.get("key", "").lower()
-        # Bezwzględne wykluczenie NBA, NFL i rynków długoterminowych
+        # TWARDY ZAKAZ: NHL, NFL, NBA i rynki długoterminowe
         banned_keywords = [
             "winner", "futures", "outrights", "championship", 
-            "nba", "basketball_nba", "americanfootball", "gridiron"
+            "nba", "basketball_nba", "americanfootball", "gridiron",
+            "icehockey", "nhl"
         ]
         if any(b in key for b in banned_keywords):
             continue
@@ -203,7 +201,6 @@ def extract_candidates(sport_key):
         home = ev.get("home_team", "Unknown")
         away = ev.get("away_team", "Unknown")
 
-        # Twarda blokada drużyn, które już kiedykolwiek były wysłane w kuponach
         if home.strip().lower() in MEM_TEAMS or away.strip().lower() in MEM_TEAMS:
             continue
 
@@ -217,7 +214,7 @@ def extract_candidates(sport_key):
         if not bk:
             continue
 
-        h2h = next((m for m in bk.get("markets", []) if m.get("key") == "h2h"), None)
+        h2h = next((m for m in bk.get("markets", []) if m.get("key"] == "h2h"), None)
         if not h2h:
             continue
 
@@ -259,9 +256,9 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.17 anti-duplicate scan started...", flush=True)
+    print("-> PITOS v5.18 fresh scan started (No NHL/NFL)...", flush=True)
     sports = get_sports()
-    print(f"-> Active sports pooled (NFL/NBA banned, memory checked): {len(sports)}", flush=True)
+    print(f"-> Active clean sports pooled: {len(sports)}", flush=True)
 
     all_candidates = []
     for sp in sports:
@@ -319,7 +316,7 @@ def run_cycle():
                 })
 
     random.shuffle(valid_coupons)
-    print(f"-> Valid non-duplicate coupons found: {len(valid_coupons)}", flush=True)
+    print(f"-> Valid clean coupons found: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -337,7 +334,7 @@ def run_cycle():
         stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
         stake_pln = stake_u * 25
 
-        lines = [f"<b>🥷 PITOS v5.17 | {c_type} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.18 | {c_type} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -381,7 +378,7 @@ def run_cycle():
 
 def background_worker():
     init_db()
-    print("-> Background worker started. Triggering initial scan...", flush=True)
+    print("-> Background worker started. Triggering initial clean scan...", flush=True)
     try:
         run_cycle()
     except Exception as e:
@@ -402,7 +399,7 @@ def background_worker():
 
 # ================= MAIN =================
 def main():
-    print("-> PITOS v5.17 starting up...", flush=True)
+    print("-> PITOS v5.18 starting up...", flush=True)
     if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("-> CRITICAL: Missing environment variables!", flush=True)
         sys.exit(1)
