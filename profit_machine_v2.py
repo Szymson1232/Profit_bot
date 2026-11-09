@@ -1,8 +1,38 @@
 #!/usr/bin/env python3
-# PITOS v5.28 — Fixed syntax error in AKO signature generation.
+# PITOS v5.29 — Hardcore instant socket bind for Railway Active status.
 
 import os
 import sys
+import socket
+import threading
+
+PORT = int(os.getenv("PORT", "8080"))
+
+# ================= CRITICAL RAILWAY INSTANT BIND =================
+def instant_http_server():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", PORT))
+        s.listen(5)
+        print(f"-> Instant socket bound on port {PORT}", flush=True)
+        while True:
+            conn, addr = s.accept()
+            try:
+                request = conn.recv(1024)
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.29 Active"
+                conn.sendall(response)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+    except Exception as e:
+        print(f"-> Instant bind error: {e}", flush=True)
+
+t_bind = threading.Thread(target=instant_http_server, daemon=True)
+t_bind.start()
+
+# ================= RESZTA LOGIKI (ŁADOWANA PO BINDZIE) =================
 import time
 import math
 import sqlite3
@@ -13,36 +43,9 @@ import random
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 import requests
-import http.server
-import socketserver
-import threading
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# ================= RAILWAY INSTANT HEALTH CHECK =================
-PORT = int(os.getenv("PORT", "8080"))
-
-class HealthHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"PITOS v5.28 Active")
-    def log_message(self, format, *args):
-        pass
-
-def run_http_server():
-    try:
-        with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
-            print(f"-> Instant health server active on port {PORT}", flush=True)
-            httpd.serve_forever()
-    except Exception as e:
-        print(f"-> Health server error: {e}", flush=True)
-
-t_http = threading.Thread(target=run_http_server, daemon=True)
-t_http.start()
-
-
-# ================= CONFIGURATION =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
@@ -53,7 +56,7 @@ MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "55"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.80"))
+MAX_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "2.80"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
@@ -69,14 +72,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.28")
+log = logging.getLogger("pitos-v5.29")
 session = requests.Session()
 
 MEM_EVENTS = set()
 MEM_SIGNATURES = set()
 
-
-# ================= DATABASE & PURGE =================
 def get_db():
     parent = os.path.dirname(os.path.abspath(SQLITE_PATH))
     if parent:
@@ -89,9 +90,9 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print(f"-> Purged old database file {SQLITE_PATH} for a fresh start.", flush=True)
-        except Exception as e:
-            print(f"-> Failed to purge old DB: {e}", flush=True)
+            print(f"-> Purged old database file {SQLITE_PATH}.", flush=True)
+        except Exception:
+            pass
 
     with get_db() as conn:
         conn.execute("""
@@ -113,33 +114,23 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-            
-    print("-> PITOS v5.28 DB freshly initialized.", flush=True)
+    print("-> PITOS v5.29 DB initialized.", flush=True)
 
-
-# ================= API & TELEGRAM =================
 def api_get(path, params=None):
     if not API_KEY:
         raise RuntimeError("Missing ODDS_API_KEY")
     p = dict(params or {})
     p["apiKey"] = API_KEY
-    
     time.sleep(0.3)
     res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
-    
     if res.status_code == 429:
-        log.warning("Rate limit hit (429). Sleeping for 10 seconds...")
         time.sleep(10)
         res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
-        
     if res.status_code != 200:
-        log.error("API Error %s: %s", res.status_code, res.text[:300])
         res.raise_for_status()
     return res.json()
 
 def telegram_send(msg):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError("Missing Telegram credentials")
     url = f"{TELEGRAM_BASE}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -150,11 +141,8 @@ def telegram_send(msg):
     res = session.post(url, json=payload, timeout=20)
     data = res.json() if res.status_code == 200 else {}
     if res.status_code != 200 or not data.get("ok"):
-        raise RuntimeError(f"Telegram failed: {res.status_code}")
-    return data["result"]["message_id"]
+        raise RuntimeError("Telegram failed")
 
-
-# ================= CORE LOGIC =================
 def parse_time(val):
     if not val:
         return None
@@ -191,7 +179,6 @@ def extract_candidates(sport_key):
         ev_id = ev.get("id")
         if not ev_id:
             continue
-
         commence = parse_time(ev.get("commence_time"))
         if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
             continue
@@ -232,7 +219,6 @@ def extract_candidates(sport_key):
             continue
 
         ev_name = f"{home} vs {away}"
-
         for name, pr, raw_p in probs:
             norm_p = raw_p / p_sum
             if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
@@ -247,33 +233,26 @@ def extract_candidates(sport_key):
                 })
     return candidates
 
-
 def run_cycle():
-    print("-> PITOS v5.28 full night extraction started...", flush=True)
+    print("-> PITOS v5.29 scan started...", flush=True)
     sports = get_sports()
-    print(f"-> Active sports pooled: {len(sports)}", flush=True)
-
     all_candidates = []
     for sp in sports:
         all_candidates.extend(extract_candidates(sp))
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates found: {len(candidates)}", flush=True)
-
     if not candidates:
-        print("-> No candidates found in current window.", flush=True)
+        print("-> No candidates found.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
     random.shuffle(candidates)
 
     valid_coupons = []
-
     for c in candidates:
         if c["odds"] >= 2.20:
-            sig_source = f"{c['event_id']}:{c['selection']}"
-            sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
+            sig = hashlib.sha256(f"{c['event_id']}:{c['selection']}".encode("utf-8")).hexdigest()
             if sig not in MEM_SIGNATURES:
                 valid_coupons.append({
                     "combo": [c],
@@ -288,15 +267,12 @@ def run_cycle():
             e_ids = [c["event_id"] for c in combo]
             if len(set(e_ids)) != r:
                 continue
-
             total_odds = math.prod(c["odds"] for c in combo)
             if MIN_TOTAL_ODDS <= total_odds <= MAX_TOTAL_ODDS:
                 sig_source = "|".join(sorted(f"{item['event_id']}:{item['selection']}" for item in combo))
                 sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-
                 if sig in MEM_SIGNATURES:
                     continue
-
                 valid_coupons.append({
                     "combo": combo,
                     "total_odds": total_odds,
@@ -305,14 +281,66 @@ def run_cycle():
                     "type": f"AKO{r} FULL"
                 })
 
-    random.shuffle(valid_coupons)
-    print(f"-> Valid coupons generated: {len(valid_coupons)}", flush=True)
-
     sent = 0
     used_in_cycle = set()
-
     for coupon in valid_coupons:
         if sent >= MAX_COUPONS:
             break
         if any(eid in used_in_cycle for eid in coupon["event_ids"]):
             continue
+
+        tot = coupon["total_odds"]
+        c_type = coupon["type"]
+        stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
+        stake_pln = stake_u * 25
+
+        lines = [f"<b>🥷 PITOS v5.29 | {c_type} #{sent+1}</b>", ""]
+        for idx, item in enumerate(coupon["combo"], 1):
+            ev_esc = html.escape(item["event"])
+            sel_esc = html.escape(item["selection"])
+            sp_esc = html.escape(item["sport"])
+            kick = item["commence"].strftime("%d.%m %H:%M UTC")
+            lines.append(f"{idx}. <b>{ev_esc}</b>\n   Typ: <i>{sel_esc}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {sp_esc} | {kick}")
+
+        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {stake_u}j ({stake_pln} zł)</b>"])
+        msg = "\n".join(lines)
+        c_id = coupon["signature"][:24]
+
+        try:
+            with get_db() as conn:
+                now_str = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "INSERT OR IGNORE INTO coupons (coupon_id, signature, message, status, created_at) VALUES (?, ?, ?, 'sent', ?)",
+                    (c_id, coupon["signature"], msg, now_str)
+                )
+                for item in coupon["combo"]:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO sent_events (event_id, sport_key, event_name, coupon_id, status, created_at) VALUES (?, ?, ?, ?, 'sent', ?)",
+                        (item["event_id"], item["sport"], item["event"], c_id, now_str)
+                    )
+            telegram_send(msg)
+            MEM_SIGNATURES.add(coupon["signature"])
+            for eid in coupon["event_ids"]:
+                MEM_EVENTS.add(eid)
+            used_in_cycle.update(coupon["event_ids"])
+            sent += 1
+        except Exception:
+            pass
+
+def background_worker():
+    init_db()
+    while True:
+        try:
+            run_cycle()
+        except Exception:
+            pass
+        time.sleep(SCAN_INTERVAL)
+
+def main():
+    t_worker = threading.Thread(target=background_worker, daemon=True)
+    t_worker.start()
+    while True:
+        time.sleep(3600)
+
+if __name__ == "__main__":
+    main()
