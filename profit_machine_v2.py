@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.4 — Flexible betting selector (Singles 2.20+ or AKO2/AKO3 total 2.00+).
+# PITOS v5.5 — Strict night-only window (14h lookahead) for immediate tonight action.
 
 import os
 import sys
@@ -16,7 +16,7 @@ import requests
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# ================= CONFIGURATION (ELASTYCZNA) =================
+# ================= CONFIGURATION (TYLKO NA NOC) =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
@@ -26,7 +26,6 @@ SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
 MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "35"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
-# WIDEŁKI DLA SINGLI (kurs 2.20+) oraz AKO (od 2.00 łącznego)
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
 MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.60"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "2.00"))
@@ -34,7 +33,9 @@ MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "3.80"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.45"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "48"))
+
+# KLUCZOWA ZMIANA: Tylko najbliższe 14 godzin (czyli dzisiejsza noc / nad ranem)
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "14"))
 
 SPORT_ALLOWLIST = {
     s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby").split(",")
@@ -49,7 +50,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.4")
+log = logging.getLogger("pitos-v5.5")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -96,7 +97,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.4 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.5 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -169,6 +170,7 @@ def extract_candidates(sport_key):
             continue
 
         commence = parse_time(ev.get("commence_time"))
+        # Ściśle nocne okno: od teraz do 14 godzin w przód
         if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
             continue
 
@@ -224,7 +226,7 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.4 scan cycle started...", flush=True)
+    print("-> PITOS v5.5 night scan cycle started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports found: {len(sports)}", flush=True)
 
@@ -235,136 +237,3 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates: {len(candidates)}", flush=True)
-
-    if not candidates:
-        print("-> No candidates found in this cycle.", flush=True)
-        return
-
-    candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
-    random.shuffle(candidates)
-
-    valid_coupons = []
-
-    # 1. Sprawdzamy Singile >= 2.20
-    for c in candidates:
-        if c["odds"] >= 2.20:
-            sig_source = f"{c['event_id']}:{c['selection']}"
-            sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-            if sig not in MEM_SIGNATURES:
-                valid_coupons.append({
-                    "combo": [c],
-                    "total_odds": c["odds"],
-                    "signature": sig,
-                    "event_ids": [c["event_id"]],
-                    "type": "SINGIEL"
-                })
-
-    # 2. Sprawdzamy AKO2 oraz AKO3 (łączny kurs 2.00 - 3.80)
-    for r in [2, 3]:
-        for combo in combinations(candidates, r):
-            e_ids = [c["event_id"] for c in combo]
-            if len(set(e_ids)) != r:
-                continue
-            if any(eid in MEM_EVENTS for eid in e_ids):
-                continue
-
-            total_odds = math.prod(c["odds"] for c in combo)
-            if MIN_TOTAL_ODDS <= total_odds <= MAX_TOTAL_ODDS:
-                sig_source = "|".join(sorted(f"{c['event_id']}:{c['selection']}" for c in combo))
-                sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-
-                if sig in MEM_SIGNATURES:
-                    continue
-
-                valid_coupons.append({
-                    "combo": combo,
-                    "total_odds": total_odds,
-                    "signature": sig,
-                    "event_ids": e_ids,
-                    "type": f"AKO{r}"
-                })
-
-    random.shuffle(valid_coupons)
-    print(f"-> Valid flexible coupons found: {len(valid_coupons)}", flush=True)
-
-    sent = 0
-    used_in_cycle = set()
-
-    for coupon in valid_coupons:
-        if sent >= MAX_COUPONS:
-            break
-        if any(eid in used_in_cycle for eid in coupon["event_ids"]):
-            continue
-        if any(eid in MEM_EVENTS for eid in coupon["event_ids"]):
-            continue
-        if coupon["signature"] in MEM_SIGNATURES:
-            continue
-
-        tot = coupon["total_odds"]
-        c_type = coupon["type"]
-        stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
-        stake_pln = stake_u * 25
-
-        lines = [f"<b>🥷 PITOS v5.4 | {c_type} PERŁA #{sent+1}</b>", ""]
-        for idx, item in enumerate(coupon["combo"], 1):
-            ev_esc = html.escape(item["event"])
-            sel_esc = html.escape(item["selection"])
-            sp_esc = html.escape(item["sport"])
-            kick = item["commence"].strftime("%d.%m %H:%M UTC")
-            lines.append(f"{idx}. <b>{ev_esc}</b>\n   Typ: <i>{sel_esc}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {sp_esc} | {kick}")
-
-        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {stake_u}j ({stake_pln} zł)</b>"])
-        msg = "\n".join(lines)
-        c_id = coupon["signature"][:24]
-
-        try:
-            with get_db() as conn:
-                now_str = datetime.now(timezone.utc).isoformat()
-                conn.execute(
-                    "INSERT INTO coupons (coupon_id, signature, message, status, created_at) VALUES (?, ?, ?, 'sent', ?)",
-                    (c_id, coupon["signature"], msg, now_str)
-                )
-                for item in coupon["combo"]:
-                    conn.execute(
-                        "INSERT INTO sent_events (event_id, sport_key, event_name, coupon_id, status, created_at) VALUES (?, ?, ?, ?, 'sent', ?)",
-                        (item["event_id"], item["sport"], item["event"], c_id, now_str)
-                    )
-
-            telegram_send(msg)
-            MEM_SIGNATURES.add(coupon["signature"])
-            for eid in coupon["event_ids"]:
-                MEM_EVENTS.add(eid)
-            used_in_cycle.update(coupon["event_ids"])
-            sent += 1
-            print(f"-> Published {c_type} coupon {c_id} successfully!", flush=True)
-        except Exception as e:
-            print(f"-> Failed to save/send coupon {c_id}: {e}", flush=True)
-
-    print(f"-> Scan cycle finished. Sent {sent} coupons.", flush=True)
-
-
-# ================= MAIN =================
-def main():
-    print("-> PITOS v5.4 starting up...", flush=True)
-    if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("-> CRITICAL: Missing environment variables!", flush=True)
-        sys.exit(1)
-
-    init_db()
-    print(f"-> PITOS v5.4 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
-
-    while True:
-        start = time.monotonic()
-        try:
-            run_cycle()
-        except Exception as e:
-            print(f"-> Cycle crashed with error: {e}", flush=True)
-
-        elapsed = time.monotonic() - start
-        sleep_time = max(30, SCAN_INTERVAL - int(elapsed))
-        print(f"-> Sleeping for {sleep_time} seconds...", flush=True)
-        time.sleep(sleep_time)
-
-if __name__ == "__main__":
-    main()
