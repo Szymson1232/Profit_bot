@@ -18,7 +18,6 @@ SPORTS_TO_CHECK = [
     "soccer_italy_serie_a",        
     "soccer_france_ligue_one",     
     "basketball_euroleague",
-    "soccer_turkey_super_lig",
     "soccer_netherlands_eredivisie"
 ]
 
