@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.5 — Strict night-only window (14h lookahead) for immediate tonight action.
+# PITOS v5.6 — Night betting selector with built-in Railway health-check server.
 
 import os
 import sys
@@ -13,13 +13,19 @@ import random
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 import requests
+import http.server
+import socketserver
+import threading
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# ================= CONFIGURATION (TYLKO NA NOC) =================
+# ================= CONFIGURATION =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
+
+# Railway automatycznie podstawia PORT dla aplikacji webowych
+PORT = int(os.getenv("PORT", "8080"))
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
@@ -33,9 +39,7 @@ MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "3.80"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.45"))
-
-# KLUCZOWA ZMIANA: Tylko najbliższe 14 godzin (czyli dzisiejsza noc / nad ranem)
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "14"))
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "14")) # Ścisła nocka
 
 SPORT_ALLOWLIST = {
     s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby").split(",")
@@ -50,11 +54,29 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.5")
+log = logging.getLogger("pitos-v5.6")
 session = requests.Session()
 
 MEM_EVENTS = set()
 MEM_SIGNATURES = set()
+
+
+# ================= RAILWAY HEALTH CHECK SERVER =================
+class HealthHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"PITOS v5.6 is up and running!")
+    def log_message(self, format, *args):
+        pass # Wyciszenie logów HTTP żeby nie śmiecić w konsoli
+
+def start_health_server():
+    try:
+        with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
+            print(f"-> Health server listening on port {PORT}", flush=True)
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"-> Health server error: {e}", flush=True)
 
 
 # ================= DATABASE =================
@@ -97,7 +119,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.5 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.6 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -170,7 +192,6 @@ def extract_candidates(sport_key):
             continue
 
         commence = parse_time(ev.get("commence_time"))
-        # Ściśle nocne okno: od teraz do 14 godzin w przód
         if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
             continue
 
@@ -226,7 +247,7 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.5 night scan cycle started...", flush=True)
+    print("-> PITOS v5.6 night scan cycle started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports found: {len(sports)}", flush=True)
 
@@ -237,3 +258,73 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
+    print(f"-> Total unique candidates for tonight: {len(candidates)}", flush=True)
+
+    if not candidates:
+        print("-> No candidates found in this night window.", flush=True)
+        return
+
+    candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
+    random.shuffle(candidates)
+
+    valid_coupons = []
+
+    for c in candidates:
+        if c["odds"] >= 2.20:
+            sig_source = f"{c['event_id']}:{c['selection']}"
+            sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
+            if sig not in MEM_SIGNATURES:
+                valid_coupons.append({
+                    "combo": [c],
+                    "total_odds": c["odds"],
+                    "signature": sig,
+                    "event_ids": [c["event_id"]],
+                    "type": "SINGIEL NOCNY"
+                })
+
+    for r in [2, 3]:
+        for combo in combinations(candidates, r):
+            e_ids = [c["event_id"] for c in combo]
+            if len(set(e_ids)) != r:
+                continue
+            if any(eid in MEM_EVENTS for eid in e_ids):
+                continue
+
+            total_odds = math.prod(c["odds"] for c in combo)
+            if MIN_TOTAL_ODDS <= total_odds <= MAX_TOTAL_ODDS:
+                sig_source = "|".join(sorted(f"{c['event_id']}:{c['selection']}" for c in combo))
+                sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
+
+                if sig in MEM_SIGNATURES:
+                    continue
+
+                valid_coupons.append({
+                    "combo": combo,
+                    "total_odds": total_odds,
+                    "signature": sig,
+                    "event_ids": e_ids,
+                    "type": f"AKO{r} NOCNY"
+                })
+
+    random.shuffle(valid_coupons)
+    print(f"-> Valid tonight coupons found: {len(valid_coupons)}", flush=True)
+
+    sent = 0
+    used_in_cycle = set()
+
+    for coupon in valid_coupons:
+        if sent >= MAX_COUPONS:
+            break
+        if any(eid in used_in_cycle for eid in coupon["event_ids"]):
+            continue
+        if any(eid in MEM_EVENTS for eid in coupon["event_ids"]):
+            continue
+        if coupon["signature"] in MEM_SIGNATURES:
+            continue
+
+        tot = coupon["total_odds"]
+        c_type = coupon["type"]
+        stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
+        stake_pln = stake_u * 25
+
+        lines = [f"<b>🥷 PITOS v5.6 | {c_type} #{
