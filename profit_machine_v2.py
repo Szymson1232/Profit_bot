@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
-# --- MASZYNA PITiS v3 (ULTIMATE ANTI-DUPLICATE & 2H MODE) ---
+# --- MASZYNA PITiS v3 (FINAL HARDCORE ANTI-DUPLICATE) ---
 API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
@@ -17,22 +17,24 @@ MAX_AKO_TOTAL = 3.20
 MAX_AKO_EVENTS = 3
 MAX_AKO_PER_CYCLE = 3
 
+# PANCERNA PAMIĘĆ GLOBALNA W PAMIĘCI KONTENERA (Nie zniknie w trakcie działania)
+GLOBAL_SENT_MATCHES = set()
+
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS v3] Maszyna Ultimate Anti-Duplicate Aktywna. API Key: {masked}")
+    print(f"[SYSTEM PITOS v3] Hardcore Anti-Duplicate Aktywny. API Key: {masked}")
     return True
 
 def init_db():
     conn = sqlite3.connect("monsters_bets_v3.db")
     cursor = conn.cursor()
-    # Tabela trzymająca historię pojedynczych meczów przez 48h
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sent_matches_history (
+        CREATE TABLE IF NOT EXISTS sent_akos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_name TEXT UNIQUE,
+            ako_signature TEXT UNIQUE,
             timestamp TEXT
         )
     """)
@@ -144,6 +146,10 @@ def extract_favorites(events, sport_name):
             continue
         seen_matches.add(match_key)
         
+        # TWARDY BLOKER: Jeśli ten mecz był kiedykolwiek wysłany w tej sesji bota, pomijamy go natychmiast!
+        if match_key in GLOBAL_SENT_MATCHES:
+            continue
+        
         for bookmaker in event.get('bookmakers', []):
             for market in bookmaker.get('markets', []):
                 if market.get('key') == 'h2h':
@@ -164,21 +170,9 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl Ultimate Anti-Dup"):
+def run_analysis_cycle(reason="Cykl Hardcore Anti-Dup"):
     print(f"\n[PITOS v3 CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    
-    conn = sqlite3.connect("monsters_bets_v3.db")
-    cursor = conn.cursor()
-    
-    # Czyszczenie historii starszej niż 48 godzin, żeby baza nie puchła w nieskończoność
-    two_days_ago = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute("DELETE FROM sent_matches_history WHERE timestamp < ?", (two_days_ago,))
-    conn.commit()
-    
-    # Pobieramy zestawienie WSZYSTKICH meczów, które były wysłane w ciągu ostatnich 48h
-    cursor.execute("SELECT match_name FROM sent_matches_history")
-    already_sent_matches = {row[0] for row in cursor.fetchall()}
-    print(f"[DB] Liczba zablokowanych meczów z ostatnich 48h: {len(already_sent_matches)}")
+    print(f"[MEMORY] Liczba unikalnych zablokowanych meczów w pamięci: {len(GLOBAL_SENT_MATCHES)}")
 
     all_sports = get_all_available_sports()
     print(f"[API] Znaleziono aktywnych dyscyplin: {len(all_sports)}")
@@ -187,10 +181,7 @@ def run_analysis_cycle(reason="Cykl Ultimate Anti-Dup"):
     for sport in all_sports[:25]:
         events = fetch_odds_for_sport(sport)
         favs = extract_favorites(events, sport)
-        
-        # TWARDY FILTR: Odrzucamy w ogóle mecze, które już kiedyś poszły na kanał w ciągu ostatnich 48h!
-        fresh_favs = [f for f in favs if f['match'] not in already_sent_matches]
-        all_favorites.extend(fresh_favs)
+        all_favorites.extend(favs)
         time.sleep(0.3)
         
     print(f"[ANALIZA v3] Pobrano świeżych, nietkniętych walorów: {len(all_favorites)}")
@@ -200,7 +191,12 @@ def run_analysis_cycle(reason="Cykl Ultimate Anti-Dup"):
     for combo in combinations(all_favorites, MAX_AKO_EVENTS):
         matches = [item['match'] for item in combo]
         
+        # Unikalność drużyn wewnątrz kuponu
         if len(set(matches)) != len(matches):
+            continue
+            
+        # Zabezpieczenie: jeśli jakikolwiek mecz z kombinacji był już wysłany, odrzucamy całe AKO
+        if any(m in GLOBAL_SENT_MATCHES for m in matches):
             continue
             
         total_odds = 1.0
@@ -208,7 +204,9 @@ def run_analysis_cycle(reason="Cykl Ultimate Anti-Dup"):
             total_odds *= item['odds']
             
         if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
+            signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
             candidates_to_send.append({
+                'signature': signature,
                 'combo': combo,
                 'total_odds': total_odds,
                 'matches': matches
@@ -217,31 +215,40 @@ def run_analysis_cycle(reason="Cykl Ultimate Anti-Dup"):
     candidates_to_send.sort(key=lambda x: x['total_odds'], reverse=True)
     
     generated_akos = 0
+    conn = sqlite3.connect("monsters_bets_v3.db")
+    cursor = conn.cursor()
+    
     cycle_used_matches = set()
     
     for cand in candidates_to_send:
         if generated_akos >= MAX_AKO_PER_CYCLE:
             break
             
-        # Sprawdzenie unikalności wewnątrz tego samego cyklu
+        # Unikalność w ramach bieżącego cyklu
         if any(m in cycle_used_matches for m in cand['matches']):
             continue
             
-        # Podwójne upewnienie się, że żaden mecz z tej kombinacji nie był wcześniej wysłany
-        if any(m in already_sent_matches for m in cand['matches']):
+        # Ostateczna weryfikacja globalnej pamięci
+        if any(m in GLOBAL_SENT_MATCHES for m in cand['matches']):
             continue
             
-        # Zapisz każdy mecz z tego kuponu do bazy jako wysłany
+        cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
+        if cursor.fetchone() is not None:
+            continue
+            
+        # Zapisz kupon do bazy
         now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-        for m in cand['matches']:
-            cursor.execute("INSERT OR IGNORE INTO sent_matches_history (match_name, timestamp) VALUES (?, ?)", (m, now_str))
-            cycle_used_matches.add(m)
-            already_sent_matches.add(m)
+        cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
         conn.commit()
+            
+        # KLUCZOWE: Dodaj mecze do GLOBALNEJ pamięci w RAM, żeby żaden cykl ich więcej nie dotknął
+        for m in cand['matches']:
+            GLOBAL_SENT_MATCHES.add(m)
+            cycle_used_matches.add(m)
             
         stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
         
-        msg = f"<b>💸 CASH MACHINE AKO3 (2H CLEAN) 💸</b>\n\n"
+        msg = f"<b>💸 CASH MACHINE AKO3 (HARDCORE CLEAN) 💸</b>\n\n"
         for idx, item in enumerate(cand['combo'], 1):
             msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
         
@@ -259,10 +266,10 @@ def run_analysis_cycle(reason="Cykl Ultimate Anti-Dup"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS v3] Start w trybie Ultimate Anti-Duplicate...")
+        print("[SYSTEM PITOS v3] Start w trybie Hardcore Anti-Duplicate...")
         
         try:
-            run_analysis_cycle(reason="Start Ultimate")
+            run_analysis_cycle(reason="Start Hardcore")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
