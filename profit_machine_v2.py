@@ -254,10 +254,3 @@ def verify_environment():
 
     if AKO_LEGS < 2:
         log.error("AKO_LEGS must be at least 2")
-        return False
-
-    if MIN_SINGLE_ODDS <= 1 or MAX_SINGLE_ODDS < MIN_SINGLE_ODDS:
-        log.error("Invalid single odds limits")
-        return False
-
-    if MIN_AKO
