@@ -10,19 +10,16 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Pełna baza dyscyplin
+# Zawężamy na chwilę dyscypliny do tych, które na 100% mają dzisiejsze mecze (piłka nożna + kosz), 
+# żeby wyciąć z API stare, wiszące kursy z NBA/NFL jeśli bukmacher ich nie zaktualizował.
 SPORTS_TO_CHECK = [
-    "americanfootball_nfl",        
     "soccer_epl",                  
     "soccer_spain_la_liga",        
     "soccer_germany_bundesliga",    
     "soccer_italy_serie_a",        
     "soccer_france_ligue_one",     
-    "basketball_nba",              
     "basketball_euroleague",       
-    "icehockey_nhl",               
-    "tennis_atp_aus_open",         
-    "baseball_mlb"                 
+    "tennis_atp_aus_open"         
 ]
 
 # Parametry AKO3 pod Betclic Bez Podatku
@@ -32,14 +29,14 @@ MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.70
 MAX_AKO_EVENTS = 3
 
-MAX_AKO_PER_CYCLE = 10
+MAX_AKO_PER_CYCLE = 5
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Hardcore Unique Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Fresh Force Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -49,13 +46,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS sent_akos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ako_signature TEXT UNIQUE,
-            timestamp TEXT
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS used_teams (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_name TEXT UNIQUE,
             timestamp TEXT
         )
     """)
@@ -120,9 +110,16 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    # Restrykcyjne okno: tylko mecze zaczynające się w ciągu najbliższych 18 godzin (żadnych starych śmieci)
+    # KRYTYCZNA BLOKADA: Tylko mecze, które odbędą się DZISIAJ (w ciągu najbliższych 12 godzin)
     min_allowed_date = now
-    max_allowed_date = now + timedelta(hours=18)
+    max_allowed_date = now + timedelta(hours=12)
+    
+    # CZARNA LISTA: Twarde odcięcie meczów-zombie, które API uporczywie wrzucało w nocy
+    blacklist_teams = [
+        "Minnesota Vikings", "Buffalo Bills", "Houston Rockets", "Denver Nuggets", 
+        "Phoenix Suns", "San Antonio Spurs", "Charlotte Hornets", "Cleveland Cavaliers", 
+        "Detroit Pistons", "Washington Wizards", "Toronto Raptors", "Memphis Grizzlies"
+    ]
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -137,6 +134,11 @@ def extract_favorites(events, sport_name):
             
         home_team = event.get('home_team')
         away_team = event.get('away_team')
+        
+        # Jeśli w meczu występuje którakolwiek z nocnych drużyn-zombie, odrzucamy z marszu!
+        if home_team in blacklist_teams or away_team in blacklist_teams:
+            continue
+            
         match_key = f"{home_team} vs {away_team}"
         
         if match_key in seen_matches:
@@ -163,31 +165,17 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl 3-godzinny"):
+def run_analysis_cycle(reason="Cykl wymuszony"):
     print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    
-    conn = sqlite3.connect("monsters_bets.db")
-    cursor = conn.cursor()
-    
-    # Czyszczenie z pamięci trwałych blokad starszych niż 24h, żeby pula się odświeżała
-    cursor.execute("DELETE FROM used_teams WHERE datetime(timestamp) < datetime('now', '-24 hours')")
-    conn.commit()
-    
-    # Pobieramy mecze, które były już użyte w ostatnich godzinach
-    cursor.execute("SELECT match_name FROM used_teams")
-    recently_used_matches = {row[0] for row in cursor.fetchall()}
     
     all_favorites = []
     for sport in SPORTS_TO_CHECK:
         events = fetch_odds_for_sport(sport)
         favs = extract_favorites(events, sport)
-        
-        # Odrzucamy w ogóle mecze, które już wcześniej postawiliśmy w bazie
-        fresh_favs = [f for f in favs if f['match'] not in recently_used_matches]
-        all_favorites.extend(fresh_favs)
+        all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Świeże, niewykorzystane zdarzenia: {len(all_favorites)}")
+    print(f"[ANALIZA] Świeże dzienne zdarzenia bez zombiaka: {len(all_favorites)}")
     
     candidates_to_send = []
     
@@ -213,36 +201,30 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
     candidates_to_send.sort(key=lambda x: x['total_odds'], reverse=True)
     
     generated_akos = 0
-    cycle_used_matches = set()
+    conn = sqlite3.connect("monsters_bets.db")
+    cursor = conn.cursor()
+    
+    global_used_matches = set()
     
     for cand in candidates_to_send:
         if generated_akos >= MAX_AKO_PER_CYCLE:
             break
             
-        if any(m in cycle_used_matches for m in cand['matches']):
+        if any(m in global_used_matches for m in cand['matches']):
             continue
             
-        # Sprawdzamy czy dokładna taśma nie była wysłana
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is None:
             now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Zapisujemy taśmę jako wysłaną
             cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
-            
-            # Blokujemy każdy mecz w bazie na 24h, żeby algorytm nigdy więcej go nie wziął
-            for m in cand['matches']:
-                cycle_used_matches.add(m)
-                try:
-                    cursor.execute("INSERT INTO used_teams (match_name, timestamp) VALUES (?, ?)", (m, now_str))
-                except sqlite3.IntegrityError:
-                    pass
-                    
             conn.commit()
             
+            for m in cand['matches']:
+                global_used_matches.add(m)
+                
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (ŚWIEŻE VALUE) 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (NOWA OFERTA DZIEŃ) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -255,15 +237,15 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
             generated_akos += 1
             
     conn.close()
-    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych, świeżych kuponów AKO3.")
+    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych kuponów.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie twardej unikalności...")
+        print("[SYSTEM PITOS] Start w trybie czystego dziennego value...")
         
         try:
-            run_analysis_cycle(reason="Start - Czyszczenie i świeże value")
+            run_analysis_cycle(reason="Wymuszone odcięcie starej bazy")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
