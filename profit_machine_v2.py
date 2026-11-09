@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.3 — Multi-sport betting selector with loosened thresholds & 48h lookahead.
+# PITOS v5.4 — Flexible betting selector (Singles 2.20+ or AKO2/AKO3 total 2.00+).
 
 import os
 import sys
@@ -16,7 +16,7 @@ import requests
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# ================= CONFIGURATION (ROZLUŹNIONE) =================
+# ================= CONFIGURATION (ELASTYCZNA) =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
@@ -26,15 +26,15 @@ SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
 MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "35"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
-MIN_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.05"))
-MAX_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.00"))  # Zwiększone do 2.00
-MIN_AKO = float(os.getenv("MIN_AKO_TOTAL", "1.85"))    # Lekko poszerzony dół AKO
-MAX_AKO = float(os.getenv("MAX_AKO_TOTAL", "3.60"))    # Zwiększona góra AKO
-AKO_LEGS = int(os.getenv("AKO_LEGS", "3"))
-MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
+# WIDEŁKI DLA SINGLI (kurs 2.20+) oraz AKO (od 2.00 łącznego)
+MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.60"))
+MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "2.00"))
+MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "3.80"))
 
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.48"))  # Obniżone z 0.55
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "48"))            # Zwiększone do 48h (cały jutrzejszy dzień)
+MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.45"))
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "48"))
 
 SPORT_ALLOWLIST = {
     s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby").split(",")
@@ -49,7 +49,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.3")
+log = logging.getLogger("pitos-v5.4")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -96,7 +96,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.3 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.4 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -210,7 +210,7 @@ def extract_candidates(sport_key):
 
         for name, pr, raw_p in probs:
             norm_p = raw_p / p_sum
-            if MIN_ODDS <= pr <= MAX_ODDS and norm_p >= MIN_PROB:
+            if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
                 candidates.append({
                     "event_id": ev_id,
                     "event": ev_name,
@@ -224,7 +224,7 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.3 scan cycle started...", flush=True)
+    print("-> PITOS v5.4 scan cycle started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports found: {len(sports)}", flush=True)
 
@@ -245,30 +245,48 @@ def run_cycle():
     random.shuffle(candidates)
 
     valid_coupons = []
-    for combo in combinations(candidates, AKO_LEGS):
-        e_ids = [c["event_id"] for c in combo]
-        if len(set(e_ids)) != AKO_LEGS:
-            continue
-        if any(eid in MEM_EVENTS for eid in e_ids):
-            continue
 
-        total_odds = math.prod(c["odds"] for c in combo)
-        if MIN_AKO <= total_odds <= MAX_AKO:
-            sig_source = "|".join(sorted(f"{c['event_id']}:{c['selection']}" for c in combo))
+    # 1. Sprawdzamy Singile >= 2.20
+    for c in candidates:
+        if c["odds"] >= 2.20:
+            sig_source = f"{c['event_id']}:{c['selection']}"
             sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
+            if sig not in MEM_SIGNATURES:
+                valid_coupons.append({
+                    "combo": [c],
+                    "total_odds": c["odds"],
+                    "signature": sig,
+                    "event_ids": [c["event_id"]],
+                    "type": "SINGIEL"
+                })
 
-            if sig in MEM_SIGNATURES:
+    # 2. Sprawdzamy AKO2 oraz AKO3 (łączny kurs 2.00 - 3.80)
+    for r in [2, 3]:
+        for combo in combinations(candidates, r):
+            e_ids = [c["event_id"] for c in combo]
+            if len(set(e_ids)) != r:
+                continue
+            if any(eid in MEM_EVENTS for eid in e_ids):
                 continue
 
-            valid_coupons.append({
-                "combo": combo,
-                "total_odds": total_odds,
-                "signature": sig,
-                "event_ids": e_ids
-            })
+            total_odds = math.prod(c["odds"] for c in combo)
+            if MIN_TOTAL_ODDS <= total_odds <= MAX_TOTAL_ODDS:
+                sig_source = "|".join(sorted(f"{c['event_id']}:{c['selection']}" for c in combo))
+                sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
+
+                if sig in MEM_SIGNATURES:
+                    continue
+
+                valid_coupons.append({
+                    "combo": combo,
+                    "total_odds": total_odds,
+                    "signature": sig,
+                    "event_ids": e_ids,
+                    "type": f"AKO{r}"
+                })
 
     random.shuffle(valid_coupons)
-    print(f"-> Valid unique AKO combinations: {len(valid_coupons)}", flush=True)
+    print(f"-> Valid flexible coupons found: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -284,10 +302,11 @@ def run_cycle():
             continue
 
         tot = coupon["total_odds"]
-        stake_u = 3 if tot <= 2.30 else (2 if tot <= 2.75 else 1)
+        c_type = coupon["type"]
+        stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
         stake_pln = stake_u * 25
 
-        lines = [f"<b>🥷 PITOS v5.3 | ŚWIEŻE AKO{AKO_LEGS} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.4 | {c_type} PERŁA #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -318,7 +337,7 @@ def run_cycle():
                 MEM_EVENTS.add(eid)
             used_in_cycle.update(coupon["event_ids"])
             sent += 1
-            print(f"-> Published coupon {c_id} successfully!", flush=True)
+            print(f"-> Published {c_type} coupon {c_id} successfully!", flush=True)
         except Exception as e:
             print(f"-> Failed to save/send coupon {c_id}: {e}", flush=True)
 
@@ -327,13 +346,13 @@ def run_cycle():
 
 # ================= MAIN =================
 def main():
-    print("-> PITOS v5.3 starting up...", flush=True)
+    print("-> PITOS v5.4 starting up...", flush=True)
     if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("-> CRITICAL: Missing environment variables!", flush=True)
         sys.exit(1)
 
     init_db()
-    print(f"-> PITOS v5.3 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
+    print(f"-> PITOS v5.4 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
 
     while True:
         start = time.monotonic()
