@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-# PITOS v5.20 — Rate limit protected engine with request throttling and sport capping.
+#!/usr/init/env python3
+# PITOS v5.21 — Aggressive night engine with widened window and relaxed probability floor.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.20 Active")
+        self.wfile.write(b"PITOS v5.21 Active")
     def log_message(self, format, *args):
         pass
 
@@ -49,7 +49,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
-MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "15"))  # Ograniczenie żeby nie dostać 429
+MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "20"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
@@ -58,8 +58,8 @@ MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.35"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "12"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.20"))  # AGRESYWNIE OBNIŻONE, ŻEBY COS WESZŁO
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "18"))  # SZERSZE OKNO NOCNE
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -69,7 +69,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.20")
+log = logging.getLogger("pitos-v5.21")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -117,7 +117,7 @@ def init_db():
             )
         """)
             
-    print("-> PITOS v5.20 DB freshly initialized. Memory cleared.", flush=True)
+    print("-> PITOS v5.21 DB freshly initialized. Memory cleared.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -127,9 +127,7 @@ def api_get(path, params=None):
     p = dict(params or {})
     p["apiKey"] = API_KEY
     
-    # Bezpieczny throttling przeciwko Error 429
     time.sleep(0.4)
-    
     res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
     
     if res.status_code == 429:
@@ -264,9 +262,9 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.20 throttled scan started...", flush=True)
+    print("-> PITOS v5.21 aggressive night scan started...", flush=True)
     sports = get_sports()
-    print(f"-> Active throttled sports pooled: {len(sports)}", flush=True)
+    print(f"-> Active sports pooled: {len(sports)}", flush=True)
 
     all_candidates = []
     for sp in sports:
@@ -274,10 +272,10 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique fresh candidates: {len(candidates)}", flush=True)
+    print(f"-> Total unique candidates: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No new fresh candidates found in window.", flush=True)
+        print("-> No candidates found in widened window.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -323,7 +321,7 @@ def run_cycle():
                 })
 
     random.shuffle(valid_coupons)
-    print(f"-> Valid clean coupons found: {len(valid_coupons)}", flush=True)
+    print(f"-> Valid coupons found: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -341,7 +339,7 @@ def run_cycle():
         stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
         stake_pln = stake_u * 25
 
-        lines = [f"<b>🥷 PITOS v5.20 | {c_type} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.21 | {c_type} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -385,11 +383,10 @@ def run_cycle():
 
 def background_worker():
     init_db()
-    print("-> Background worker started. Triggering initial throttled scan...", flush=True)
+    print("-> Background worker started. Triggering initial aggressive scan...", flush=True)
     try:
         run_cycle()
     except Exception as e:
-    
         print(f"-> Initial scan crashed: {e}", flush=True)
 
     while True:
@@ -407,7 +404,7 @@ def background_worker():
 
 # ================= MAIN =================
 def main():
-    print("-> PITOS v5.20 starting up...", flush=True)
+    print("-> PITOS v5.21 starting up...", flush=True)
     if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("-> CRITICAL: Missing environment variables!", flush=True)
         sys.exit(1)
