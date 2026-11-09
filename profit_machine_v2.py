@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.15 — Guaranteed instant HTTP socket bind for Railway Active status.
+# PITOS v5.16 — Open-night engine (all sports scanned, zero allowlist restrictions, strict 10/11 night window).
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.15 Active")
+        self.wfile.write(b"PITOS v5.16 Active")
     def log_message(self, format, *args):
         pass
 
@@ -38,7 +38,6 @@ def run_http_server():
     except Exception as e:
         print(f"-> Health server error: {e}", flush=True)
 
-# Natychmiastowe otwarcie portu dla Railway w osobnym daemonie
 t_http = threading.Thread(target=run_http_server, daemon=True)
 t_http.start()
 
@@ -50,22 +49,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
-MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "45"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
-MAX_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "2.80"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.80"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.38"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "12"))
-
-SPORT_ALLOWLIST = {
-    s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby,basketball_ncaa").split(",")
-    if s.strip()
-}
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.35"))
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "12")) # Ścisła nocka 10/11
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -75,7 +68,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.15")
+log = logging.getLogger("pitos-v5.16")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -122,7 +115,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.15 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.16 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -168,17 +161,18 @@ def parse_time(val):
         return None
 
 def get_sports():
+    """Pobiera WSZYSTKIE dostępne dyscypliny, odrzucając tylko NBA i rynki długoterminowe"""
     sports = api_get("/sports/")
     active = []
     for s in sports:
         if not s.get("active", True):
             continue
         key = s.get("key", "").lower()
-        if any(b in key for b in ["winner", "futures", "outrights", "championship", "basketball", "nba"]):
+        # Wykluczamy wyłącznie NBA oraz outrights/futures
+        if any(b in key for b in ["winner", "futures", "outrights", "championship", "nba", "basketball_nba"]):
             continue
-        if not SPORT_ALLOWLIST or any(a in key for a in SPORT_ALLOWLIST) or "ncaa" in key or "college" in key:
-            active.append(key)
-    return active[:MAX_SPORTS]
+        active.append(key)
+    return active
 
 def extract_candidates(sport_key):
     try:
@@ -195,6 +189,7 @@ def extract_candidates(sport_key):
             continue
 
         commence = parse_time(ev.get("commence_time"))
+        # Ścisłe okno nocne 10/11
         if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
             continue
 
@@ -250,21 +245,21 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.15 scan cycle started...", flush=True)
+    print("-> PITOS v5.16 open-night scan started...", flush=True)
     sports = get_sports()
-    print(f"-> Active sports found: {len(sports)}", flush=True)
+    print(f"-> Total active sports pooled (no allowlist limits): {len(sports)}", flush=True)
 
     all_candidates = []
     for sp in sports:
         all_candidates.extend(extract_candidates(sp))
-        time.sleep(0.05)
+        time.sleep(0.02)
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates: {len(candidates)}", flush=True)
+    print(f"-> Total unique candidates for tonight: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in current window.", flush=True)
+        print("-> No candidates found in tonight's open window.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -304,7 +299,7 @@ def run_cycle():
                 })
 
     random.shuffle(valid_coupons)
-    print(f"-> Valid coupons found: {len(valid_coupons)}", flush=True)
+    print(f"-> Valid open-night coupons found: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -320,7 +315,7 @@ def run_cycle():
         stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
         stake_pln = stake_u * 25
 
-        lines = [f"<b>🥷 PITOS v5.15 | {c_type} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.16 | {c_type} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -378,7 +373,7 @@ def background_worker():
 
 # ================= MAIN =================
 def main():
-    print("-> PITOS v5.15 starting up...", flush=True)
+    print("-> PITOS v5.16 starting up...", flush=True)
     if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("-> CRITICAL: Missing environment variables!", flush=True)
         sys.exit(1)
