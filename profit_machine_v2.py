@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
-# --- NOWA MASZYNA PITiS v3 (FULL MARKET SCANNER + API QUOTA GUARD) ---
+# --- MASZYNA PITiS v3 (FULL MARKET + STRICT UNIQUE MATCHES) ---
 API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
@@ -22,7 +22,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS v3] Maszyna Full Market Aktywna. API Key: {masked}")
+    print(f"[SYSTEM PITOS v3] Maszyna Full Market z unikalnością cyklu. API Key: {masked}")
     return True
 
 def init_db():
@@ -64,20 +64,16 @@ def send_telegram_message(text):
         print(f"[TELEGRAM EXCEPTION] {e}")
 
 def check_api_quota_and_warn(response_headers):
-    """Sprawdza nagłówki The Odds API i wysyła ostrzeżenie na Telegram, gdy limit się kończy."""
     remaining = response_headers.get('x-requests-remaining')
     used = response_headers.get('x-requests-used')
     
     if remaining is not None:
         remaining_int = int(remaining)
-        print(f"[API QUOTA] Pozostało zapytań w miesiącu: {remaining_int} (Zużyto: {used})")
-        
-        # Jeśli zostało mniej niż 100 zapytań, wyślij alarm na Telegram!
+        print(f"[API QUOTA] Pozostało zapytań: {remaining_int} (Zużyto: {used})")
         if remaining_int <= 100:
             warn_msg = (
-                f"🚨 <b>OSTRZEŻENIE: LIMIT API NA WYKOŃCZENIU!</b> 🚨\n\n"
-                f"Pozostało Ci zaledwie <b>{remaining_int}</b> zapytań do The Odds API.\n"
-                f"Odów klucz/pakiet jak najszybciej, żeby uniknąć przestoju maszynki!"
+                f"🚨 <b>OSTRZEŻENIE: LIMIT API NA WYKOŃCZENIE!</b> 🚨\n\n"
+                f"Pozostało Ci zaledwie <b>{remaining_int}</b> zapytań do The Odds API."
             )
             send_telegram_message(warn_msg)
 
@@ -87,11 +83,9 @@ def get_all_available_sports():
     try:
         response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
-            # Sprawdzamy stan limitu w nagłówkach
             check_api_quota_and_warn(response.headers)
             sports = response.json()
             return [s['key'] for s in sports if s.get('active', True)]
-        print(f"[API ERROR {response.status_code}] Nie udało się pobrać listy sportów")
         return []
     except Exception as e:
         print(f"[EXCEPTION sports]: {e}")
@@ -176,26 +170,27 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl v3 Full Market"):
-    print(f"\n[PITOS v3 CYCLE] Start skanowania całego rynku ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+def run_analysis_cycle(reason="Cykl v3 Clean Unique"):
+    print(f"\n[PITOS v3 CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
     all_sports = get_all_available_sports()
-    print(f"[API] Znaleziono aktywnych dyscyplin w całym API: {len(all_sports)}")
+    print(f"[API] Znaleziono aktywnych dyscyplin: {len(all_sports)}")
     
     all_favorites = []
     for sport in all_sports[:25]:
         events = fetch_odds_for_sport(sport)
         favs = extract_favorites(events, sport)
         all_favorites.extend(favs)
-        time.sleep(0.5)
+        time.sleep(0.3)
         
-    print(f"[ANALIZA v3] Pobrano łącznie walorów z całego świata: {len(all_favorites)}")
+    print(f"[ANALIZA v3] Pobrano łącznie unikalnych walorów: {len(all_favorites)}")
     
     candidates_to_send = []
     
     for combo in combinations(all_favorites, MAX_AKO_EVENTS):
         matches = [item['match'] for item in combo]
         
+        # Weryfikacja, czy w obrębie jednego kuponu nie ma powtórki tego samego meczu
         if len(set(matches)) != len(matches):
             continue
             
@@ -218,15 +213,18 @@ def run_analysis_cycle(reason="Cykl v3 Full Market"):
     conn = sqlite3.connect("monsters_bets_v3.db")
     cursor = conn.cursor()
     
-    global_used_matches = set()
+    # ŻELAZNA ZASADA: Zbiór śledzący mecze użyte W TYM KONKRETNYM CYKLU
+    cycle_used_matches = set()
     
     for cand in candidates_to_send:
         if generated_akos >= MAX_AKO_PER_CYCLE:
             break
             
-        if any(m in global_used_matches for m in cand['matches']):
+        # Odrzuć kupon, jeśli którakolwiek drużyna z niego została już użyta na innym kuponie w tym cyklu!
+        if any(m in cycle_used_matches for m in cand['matches']):
             continue
             
+        # Sprawdzenie w bazie historycznej SQLite (czy kupon lub mecze były już grane w ciągu 24h)
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is not None:
             continue
@@ -241,16 +239,17 @@ def run_analysis_cycle(reason="Cykl v3 Full Market"):
         if match_already_sent:
             continue
             
+        # Zapisz do bazy i zarezerwuj mecze dla tego cyklu
         now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
         for m in cand['matches']:
             cursor.execute("INSERT OR IGNORE INTO sent_matches (match_name, timestamp) VALUES (?, ?)", (m, now_str))
-            global_used_matches.add(m)
+            cycle_used_matches.add(m)  # Blokada meczu przed ponownym użyciem w innych kuponach w tym cyklu
         conn.commit()
             
         stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
         
-        msg = f"<b>💸 CASH MACHINE AKO3 (FULL MARKET v3) 💸</b>\n\n"
+        msg = f"<b>💸 CASH MACHINE AKO3 (CLEAN UNIQUE) 💸</b>\n\n"
         for idx, item in enumerate(cand['combo'], 1):
             msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
         
@@ -263,15 +262,15 @@ def run_analysis_cycle(reason="Cykl v3 Full Market"):
         generated_akos += 1
             
     conn.close()
-    print(f"[PITOS v3 CYCLE] Wypuszczono na kanał: {generated_akos} kuponów.")
+    print(f"[PITOS v3 CYCLE] Wypuszczono na kanał unikalnych kuponów: {generated_akos}.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS v3] Start pełnego skanera rynku z ochroną limitu...")
+        print("[SYSTEM PITOS v3] Start w trybie Clean Unique...")
         
         try:
-            run_analysis_cycle(reason="Start v3 z ochroną limitu")
+            run_analysis_cycle(reason="Start Clean Unique")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
