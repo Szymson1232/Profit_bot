@@ -10,16 +10,16 @@ API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Szeroka, elastyczna pula dyscyplin, które grają w ciągu dnia i wieczorem
+# W 100% sprawdzone i aktywne endpointy bez błędów 404
 SPORTS_TO_CHECK = [
     "soccer_epl",                  
     "soccer_spain_la_liga",        
     "soccer_germany_bundesliga",    
     "soccer_italy_serie_a",        
     "soccer_france_ligue_one",     
-    "basketball_euroleague",       
-    "tennis_atp_challenger",       
-    "tennis_wta_challenger"
+    "basketball_euroleague",
+    "soccer_turkey_super_lig",
+    "soccer_netherlands_eredivisie"
 ]
 
 # Parametry AKO3 pod Betclic Bez Podatku
@@ -36,7 +36,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Final Master Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Production Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -110,7 +110,6 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    # Elastyczne okno na najbliższe 24 godziny, żeby złapać dzisiejsze mecze popołudniowe/wieczorne
     min_allowed_date = now - timedelta(hours=1)
     max_allowed_date = now + timedelta(hours=24)
     
@@ -173,7 +172,7 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Pobrano świeże zdarzenia rynkowe: {len(all_favorites)}")
+    print(f"[ANALIZA] Pobrano czyste zdarzenia rynkowe: {len(all_favorites)}")
     
     candidates_to_send = []
     
@@ -222,7 +221,7 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (MASTER VALUE) 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (CLEAN VALUE) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -240,10 +239,10 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie Master Final...")
+        print("[SYSTEM PITOS] Start w trybie produkcyjnym...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start ostateczny")
+            run_analysis_cycle(reason="Wymuszony start produkcyjny")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
