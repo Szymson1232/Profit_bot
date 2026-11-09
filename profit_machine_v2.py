@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.27 — Full night unrestricted extraction engine.
+# PITOS v5.28 — Fixed syntax error in AKO signature generation.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.27 Active")
+        self.wfile.write(b"PITOS v5.28 Active")
     def log_message(self, format, *args):
         pass
 
@@ -69,7 +69,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.27")
+log = logging.getLogger("pitos-v5.28")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -114,7 +114,7 @@ def init_db():
             )
         """)
             
-    print("-> PITOS v5.27 DB freshly initialized.", flush=True)
+    print("-> PITOS v5.28 DB freshly initialized.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -249,7 +249,7 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.27 full night extraction started...", flush=True)
+    print("-> PITOS v5.28 full night extraction started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports pooled: {len(sports)}", flush=True)
 
@@ -291,4 +291,28 @@ def run_cycle():
 
             total_odds = math.prod(c["odds"] for c in combo)
             if MIN_TOTAL_ODDS <= total_odds <= MAX_TOTAL_ODDS:
-                sig_source = "|".join(sorted(f
+                sig_source = "|".join(sorted(f"{item['event_id']}:{item['selection']}" for item in combo))
+                sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
+
+                if sig in MEM_SIGNATURES:
+                    continue
+
+                valid_coupons.append({
+                    "combo": combo,
+                    "total_odds": total_odds,
+                    "signature": sig,
+                    "event_ids": e_ids,
+                    "type": f"AKO{r} FULL"
+                })
+
+    random.shuffle(valid_coupons)
+    print(f"-> Valid coupons generated: {len(valid_coupons)}", flush=True)
+
+    sent = 0
+    used_in_cycle = set()
+
+    for coupon in valid_coupons:
+        if sent >= MAX_COUPONS:
+            break
+        if any(eid in used_in_cycle for eid in coupon["event_ids"]):
+            continue
