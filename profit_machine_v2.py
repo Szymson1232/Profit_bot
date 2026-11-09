@@ -5,29 +5,28 @@ import requests
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
-# --- KONFIGURACJA MASZYNY DO ZARABIANIA PITOSU ---
+# --- NOWA MASZYNA PITiS v3 (FULL MARKET SCANNER) ---
 API_KEY = os.getenv("ODDS_API_KEY", "8d1345b2c03e9b352841ce36f6bde3ec")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Parametry AKO3 pod Betclic Bez Podatku
-MIN_ODDS_SINGLE = 1.08
-MAX_ODDS_SINGLE = 1.70
-MIN_AKO_TOTAL = 1.95
-MAX_AKO_TOTAL = 2.90
+MIN_ODDS_SINGLE = 1.05
+MAX_ODDS_SINGLE = 1.75
+MIN_AKO_TOTAL = 1.90
+MAX_AKO_TOTAL = 3.20
 MAX_AKO_EVENTS = 3
-MAX_AKO_PER_CYCLE = 2
+MAX_AKO_PER_CYCLE = 3
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Iron Time Guard Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS v3] Maszyna Full Market Aktywna. API Key: {masked}")
     return True
 
 def init_db():
-    conn = sqlite3.connect("monsters_bets.db")
+    conn = sqlite3.connect("monsters_bets_v3.db")
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sent_akos (
@@ -64,36 +63,21 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"[TELEGRAM EXCEPTION] {e}")
 
-def get_active_sports_for_current_time():
-    """ŻELAZNY SELEKTOR: W dzień blokuje Amerykę, w nocy ją odblokowuje."""
-    now_utc = datetime.now(timezone.utc)
-    local_hour = (now_utc.hour + 1) % 24  # Czas polski CET/CEST (uproszczona konwersja strefy)
-    
-    european_sports = [
-        "soccer_epl",                  
-        "soccer_spain_la_liga",        
-        "soccer_germany_bundesliga",    
-        "soccer_italy_serie_a",        
-        "soccer_france_ligue_one",     
-        "basketball_euroleague",
-        "soccer_netherlands_eredivisie",
-        "soccer_poland_ekstraklasa"
-    ]
-    
-    american_sports = [
-        "basketball_nba",
-        "icehockey_nhl",
-        "americanfootball_nfl",
-        "baseball_mlb"
-    ]
-    
-    # Jeśli jest dzień (między 06:00 a 20:00 czasu polskiego), gramy TYLKO Europe/dzienne!
-    if 6 <= local_hour < 20:
-        print(f"[TIME GUARD] Godzina {local_hour}:00 PL -> Tryb DZIENNY (brak sportów USA).")
-        return european_sports
-    else:
-        print(f"[TIME GUARD] Godzina {local_hour}:00 PL -> Tryb NOCNY (pełny arsenał USA + Europa).")
-        return european_sports + american_sports
+def get_all_available_sports():
+    """Pobiera automatycznie WSZYSTKE aktywne dyscypliny z API bez sztywnych listy!"""
+    url = "https://api.the-odds-api.com/v4/sports/"
+    params = {"apiKey": API_KEY}
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        if response.status_code == 200:
+            sports = response.json()
+            # Zwracamy klucze wszystkich sportów, które są aktualnie aktywne
+            return [s['key'] for s in sports if s.get('active', True)]
+        print(f"[API ERROR {response.status_code}] Nie udało się pobrać listy sportów")
+        return []
+    except Exception as e:
+        print(f"[EXCEPTION sports]: {e}")
+        return []
 
 def fetch_odds_for_sport(sport):
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
@@ -104,13 +88,11 @@ def fetch_odds_for_sport(sport):
         "oddsFormat": "decimal"
     }
     try:
-        response = requests.get(url, params=params, timeout=15)
+        response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
             return response.json()
-        print(f"[API ERROR {response.status_code}] Sport {sport}")
         return []
-    except Exception as e:
-        print(f"[EXCEPTION] {sport}: {e}")
+    except Exception:
         return []
 
 def parse_iso_time(time_str):
@@ -135,7 +117,8 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    min_allowed_date = now - timedelta(hours=1)
+    # Bierzemy mecze od teraz do 24 godzin w przód
+    min_allowed_date = now - timedelta(minutes=30)
     max_allowed_date = now + timedelta(hours=24)
     
     for event in events:
@@ -145,13 +128,11 @@ def extract_favorites(events, sport_name):
         if event_time:
             if event_time.tzinfo is None:
                 event_time = event_time.replace(tzinfo=timezone.utc)
-            
             if event_time < min_allowed_date or event_time > max_allowed_date:
                 continue
             
         home_team = event.get('home_team', '')
         away_team = event.get('away_team', '')
-            
         match_key = f"{home_team} vs {away_team}"
         
         if match_key in seen_matches:
@@ -178,19 +159,21 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl Iron-Guard"):
-    print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+def run_analysis_cycle(reason="Cykl v3 Full Market"):
+    print(f"\n[PITOS v3 CYCLE] Start skanowania całego rynku ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
-    active_sports = get_active_sports_for_current_time()
+    all_sports = get_all_available_sports()
+    print(f"[API] Znaleziono aktywnych dyscyplin w całym API: {len(all_sports)}")
     
     all_favorites = []
-    for sport in active_sports:
+    # Skanujemy pierwsze 25 aktywnych sportów z rynku żeby zmieścić się w limitach czasowych żądań
+    for sport in all_sports[:25]:
         events = fetch_odds_for_sport(sport)
         favs = extract_favorites(events, sport)
         all_favorites.extend(favs)
-        time.sleep(1)
+        time.sleep(0.5)
         
-    print(f"[ANALIZA] Pobrano zweryfikowane zdarzenia: {len(all_favorites)}")
+    print(f"[ANALIZA v3] Pobrano łącznie walorów z całego świata: {len(all_favorites)}")
     
     candidates_to_send = []
     
@@ -216,7 +199,7 @@ def run_analysis_cycle(reason="Cykl Iron-Guard"):
     candidates_to_send.sort(key=lambda x: x['total_odds'], reverse=True)
     
     generated_akos = 0
-    conn = sqlite3.connect("monsters_bets.db")
+    conn = sqlite3.connect("monsters_bets_v3.db")
     cursor = conn.cursor()
     
     global_used_matches = set()
@@ -251,7 +234,7 @@ def run_analysis_cycle(reason="Cykl Iron-Guard"):
             
         stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
         
-        msg = f"<b>💸 CASH MACHINE AKO3 (IRON GUARD) 💸</b>\n\n"
+        msg = f"<b>💸 CASH MACHINE AKO3 (FULL MARKET v3) 💸</b>\n\n"
         for idx, item in enumerate(cand['combo'], 1):
             msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
         
@@ -264,15 +247,15 @@ def run_analysis_cycle(reason="Cykl Iron-Guard"):
         generated_akos += 1
             
     conn.close()
-    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych kuponów.")
+    print(f"[PITOS v3 CYCLE] Wypuszczono na kanał: {generated_akos} kuponów.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie Iron Time Guard...")
+        print("[SYSTEM PITOS v3] Start pełnego skanera rynku...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start Iron")
+            run_analysis_cycle(reason="Start v3")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
@@ -283,7 +266,7 @@ if __name__ == "__main__":
             try:
                 current_time = time.time()
                 if current_time - last_run_timestamp >= FIFTEEN_MINUTES_IN_SECONDS:
-                    run_analysis_cycle(reason="Cykl automatyczny co 15m")
+                    run_analysis_cycle(reason="Cykl automatyczny 15m")
                     last_run_timestamp = current_time
             except Exception as e:
                 print(f"[CRITICAL] Błąd pętli głównej: {e}")
