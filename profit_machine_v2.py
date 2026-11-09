@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v4 — Multi-sport selector with unbuffered logs & instant startup execution.
+# PITOS v4 — Multi-sport selector with in-memory & SQLite hybrid deduplication.
 # Required Railway Variables / Hardcoded Credentials Active:
 #   ODDS_API_KEY
 #   TELEGRAM_BOT_TOKEN
@@ -18,7 +18,6 @@ from itertools import combinations
 
 import requests
 
-# WYMUSZENIE NATYCHMIASTOWEGO WYŚWIETLANIA LOGÓW W RAILWAY
 os.environ["PYTHONUNBUFFERED"] = "1"
 
 # ------------------------- CONFIGURATION -------------------------
@@ -26,7 +25,9 @@ os.environ["PYTHONUNBUFFERED"] = "1"
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
-SQLITE_PATH = os.getenv("SQLITE_PATH", "/data/pitos_v4.db")
+
+# Lokalna ścieżka bazy w katalogu aplikacji (zamiast /data)
+SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v4.db")
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
 MAX_SPORTS_PER_CYCLE = int(os.getenv("MAX_SPORTS_PER_CYCLE", "25"))
 
@@ -53,7 +54,6 @@ REQUEST_TIMEOUT = 20
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Konfiguracja logowania ze streamem na sys.stdout dla pewności w Dockerze
 logging.basicConfig(
     stream=sys.stdout,
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -63,12 +63,17 @@ log = logging.getLogger("pitos-v4")
 
 session = requests.Session()
 
+# Globalny bufor w pamięci RAM chroniący przed powtórkami w trakcie działania bota
+MEMORY_SENT_EVENTS = set()
+MEMORY_SENT_SIGNATURES = set()
+
 
 # ------------------------- DATABASE -------------------------
 
 def db_connect():
     parent = os.path.dirname(os.path.abspath(SQLITE_PATH))
-    os.makedirs(parent, exist_ok=True)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
     conn = sqlite3.connect(SQLITE_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -143,25 +148,40 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_sent_events_status "
             "ON sent_events(status)"
         )
+        
+        # Ładowanie historii do pamięci RAM przy starcie
+        cursor = conn.cursor()
+        cursor.execute("SELECT event_id FROM sent_events")
+        for row in cursor.fetchall():
+            MEMORY_SENT_EVENTS.add(row[0])
+
+        cursor.execute("SELECT signature FROM coupons")
+        for row in cursor.fetchall():
+            MEMORY_SENT_SIGNATURES.add(row[0])
+
+        log.info("SQLite DB initialized locally. Path: %s | Loaded events in RAM: %d | Loaded signatures in RAM: %d", 
+                 SQLITE_PATH, len(MEMORY_SENT_EVENTS), len(MEMORY_SENT_SIGNATURES))
 
 
 def event_already_used(event_id):
+    if event_id in MEMORY_SENT_EVENTS:
+        return True
     with db_session() as conn:
         row = conn.execute(
             "SELECT 1 FROM sent_events WHERE event_id = ? LIMIT 1",
             (event_id,)
         ).fetchone()
-
     return row is not None
 
 
 def coupon_signature_exists(signature):
+    if signature in MEMORY_SENT_SIGNATURES:
+        return True
     with db_session() as conn:
         row = conn.execute(
             "SELECT 1 FROM coupons WHERE signature = ? LIMIT 1",
             (signature,)
         ).fetchone()
-
     return row is not None
 
 
@@ -585,6 +605,11 @@ def reserve_coupon(coupon, message):
                         now,
                     ),
                 )
+
+        # Aktualizacja pamięci RAM
+        MEMORY_SENT_SIGNATURES.add(coupon["signature"])
+        for eid in coupon["event_ids"]:
+            MEMORY_SENT_EVENTS.add(eid)
 
         return coupon_id
 
