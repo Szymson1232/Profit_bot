@@ -43,7 +43,7 @@ t_http.start()
 
 
 # ================= CONFIGURATION =================
-API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "da5d00ec5b19387fce759db159812aef").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
