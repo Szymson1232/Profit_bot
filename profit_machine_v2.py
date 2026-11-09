@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# PITOS v4 — Betclic-only selector with persistent event deduplication.
-# Required Railway Variables:
+# PITOS v4 — Betclic-only selector with persistent event deduplication & dynamic stakes.
+# Required Railway Variables / Hardcoded Credentials Active:
 #   ODDS_API_KEY
 #   TELEGRAM_BOT_TOKEN
 #   TELEGRAM_CHAT_ID
@@ -8,10 +8,6 @@
 # Recommended Railway Volume:
 #   Mount path: /data
 #   SQLITE_PATH: /data/pitos_v4.db
-#
-# IMPORTANT:
-# This bot ranks selections using Betclic's market-implied probabilities.
-# It does NOT independently predict outcomes and cannot guarantee profit.
 
 import os
 import time
@@ -27,9 +23,9 @@ import requests
 
 # ------------------------- CONFIGURATION -------------------------
 
-API_KEY = os.getenv("ODDS_API_KEY", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 SQLITE_PATH = os.getenv("SQLITE_PATH", "/data/pitos_v4.db")
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
 MAX_SPORTS_PER_CYCLE = int(os.getenv("MAX_SPORTS_PER_CYCLE", "25"))
@@ -379,7 +375,6 @@ def extract_candidate(event, sport_key):
     if len(valid_prices) < 2:
         return None
 
-    # Normalize implied probabilities to reduce bookmaker overround.
     raw_probs = [
         (name, price, 1.0 / price)
         for name, price in valid_prices
@@ -416,7 +411,6 @@ def extract_candidate(event, sport_key):
     if not choices:
         return None
 
-    # One selection per event.
     return max(
         choices,
         key=lambda item: item["market_probability"]
@@ -483,6 +477,23 @@ def build_candidates(candidates):
 
 
 def format_coupon(coupon, number):
+    combined_probability = math.prod(
+        item["market_probability"]
+        for item in coupon["combo"]
+    )
+
+    # Dynamic stake allocation based on calculated market confidence
+    # 1j = 25 zł, 2j = 50 zł, 3j = 75 zł
+    if combined_probability >= 0.35:
+        stake_units = 3
+        stake_pln = 75
+    elif combined_probability >= 0.25:
+        stake_units = 2
+        stake_pln = 50
+    else:
+        stake_units = 1
+        stake_pln = 25
+
     lines = [
         f"<b>🥷 PITOS v4 | AKO{AKO_LEGS} #{number}</b>",
         ""
@@ -504,28 +515,17 @@ def format_coupon(coupon, number):
             f"   {sport} | {kickoff}"
         )
 
-    combined_probability = math.prod(
-        item["market_probability"]
-        for item in coupon["combo"]
-    )
-
     lines.extend([
         "",
         f"📊 <b>Kurs łączny: {coupon['total_odds']:.2f}</b>",
-        f"📈 <b>Orientacyjne prawdopodobieństwo rynkowe AKO: "
-        f"{combined_probability * 100:.1f}%</b>",
-        "",
-        "<i>Kursy: Betclic. Prawdopodobieństwo jest szacunkiem z kursów "
-        "rynkowych; dla AKO zakłada przybliżoną niezależność zdarzeń. "
-        "To nie jest niezależna prognoza ani gwarancja wyniku.</i>",
+        f"📈 <b>Prawdopodobieństwo AKO: {combined_probability * 100:.1f}%</b>",
+        f"💰 <b>Zalecana stawka: {stake_units}j ({stake_pln} zł)</b>",
     ])
 
     return "\n".join(lines)
 
 
 def reserve_coupon(coupon, message):
-    """Persist coupon and all its events before Telegram delivery."""
-
     now = datetime.now(timezone.utc).isoformat()
     coupon_id = coupon["signature"][:24]
 
@@ -663,7 +663,6 @@ def run_cycle(reason="scheduled"):
                 exc
             )
 
-    # Deduplicate by event ID.
     unique = {}
 
     for candidate in candidates:
@@ -721,7 +720,6 @@ def run_cycle(reason="scheduled"):
         ):
             continue
 
-        # Recheck database before reserving.
         if any(
             event_already_used(event_id)
             for event_id in coupon["event_ids"]
@@ -741,7 +739,6 @@ def run_cycle(reason="scheduled"):
         if coupon_id is None:
             continue
 
-        # Events stay reserved if delivery is uncertain.
         try:
             telegram_send(message)
 
@@ -804,7 +801,6 @@ def main():
         SCAN_INTERVAL_SECONDS
     )
 
-    # Run immediately on startup, then every configured interval.
     first_cycle = True
 
     while True:
