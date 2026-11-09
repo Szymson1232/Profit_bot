@@ -28,14 +28,14 @@ MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.80
 MAX_AKO_EVENTS = 3
 
-MAX_AKO_PER_CYCLE = 5
+MAX_AKO_PER_CYCLE = 3
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Production Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Turbo 15m Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -110,7 +110,7 @@ def extract_favorites(events, sport_name):
     now = datetime.now(timezone.utc)
     
     min_allowed_date = now - timedelta(hours=1)
-    max_allowed_date = now + timedelta(hours=24)
+    max_allowed_date = now + timedelta(hours=36) # Zwiększamy horyzont do 36h, żeby złapać nadchodzące mecze
     
     banned_keywords = [
         "Toronto", "Memphis", "Houston", "Denver", "Phoenix", 
@@ -161,7 +161,7 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl 3-godzinny"):
+def run_analysis_cycle(reason="Cykl 15-minutowy"):
     print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
     all_favorites = []
@@ -220,7 +220,7 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (CLEAN VALUE) 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (TURBO VALUE) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -238,21 +238,21 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie produkcyjnym...")
+        print("[SYSTEM PITOS] Start w trybie Turbo 15m...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start produkcyjny")
+            run_analysis_cycle(reason="Wymuszony start Turbo")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
         last_run_timestamp = time.time()
-        THREE_HOURS_IN_SECONDS = 3 * 3600
+        FIFTEEN_MINUTES_IN_SECONDS = 15 * 60  # Skanowanie co 15 minut!
         
         while True:
             try:
                 current_time = time.time()
-                if current_time - last_run_timestamp >= THREE_HOURS_IN_SECONDS:
-                    run_analysis_cycle(reason="Cykl automatyczny co 3h")
+                if current_time - last_run_timestamp >= FIFTEEN_MINUTES_IN_SECONDS:
+                    run_analysis_cycle(reason="Cykl automatyczny co 15m")
                     last_run_timestamp = current_time
             except Exception as e:
                 print(f"[CRITICAL] Błąd pętli głównej: {e}")
