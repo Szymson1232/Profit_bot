@@ -10,7 +10,7 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Pełna baza dyscyplin pod maksymalny zysk (NFL, piłka, kosz, hokej i inne)
+# Pełna baza dyscyplin pod maksymalny zysk
 SPORTS_TO_CHECK = [
     "americanfootball_nfl",        
     "soccer_epl",                  
@@ -32,7 +32,7 @@ MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.70
 MAX_AKO_EVENTS = 3      # Zawsze precyzyjne AKO3
 
-# Wysoki limit dropów na cykl – maszyna wypluwa tyle perełek, ile znajdzie!
+# Wysoki limit dropów na cykl
 MAX_AKO_PER_CYCLE = 15
 
 def verify_environment():
@@ -40,7 +40,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 wystartowała (Tryb co 3h). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 wystartował (Tryb dzienne value). API Key: {masked}")
     return True
 
 def init_db():
@@ -113,7 +113,10 @@ def extract_favorites(events, sport_name):
     favorites = []
     seen_matches = set()
     now = datetime.now(timezone.utc)
-    max_allowed_date = now + timedelta(hours=48)
+    
+    # KRYTYCZNA ZMIANA: Okno operacyjne ustawiamy na nadchodzące 24 godziny (żadnych odległych nocy czy przeszłości)
+    min_allowed_date = now                  # Od teraz
+    max_allowed_date = now + timedelta(hours=24) # Maksymalnie za dobę
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -122,7 +125,9 @@ def extract_favorites(events, sport_name):
         if event_time:
             if event_time.tzinfo is None:
                 event_time = event_time.replace(tzinfo=timezone.utc)
-            if event_time < now or event_time > max_allowed_date:
+            
+            # Odrzucamy mecze, które już się zaczęły lub są zaplanowane dopiero za ponad 24 godziny
+            if event_time < min_allowed_date or event_time > max_allowed_date:
                 continue
             
         home_team = event.get('home_team')
@@ -163,14 +168,13 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} potencjalnych zdarzeń.")
+    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} aktualnych zdarzeń (najbliższe 24h).")
     
     candidates_to_send = []
     
     for combo in combinations(all_favorites, MAX_AKO_EVENTS):
         matches = [item['match'] for item in combo]
         
-        # Unikalność w obrębie pojedynczej kombinacji
         if len(set(matches)) != len(matches):
             continue
             
@@ -193,14 +197,12 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
     
-    # 🔒 ŻELAZNA TARCZA: Żaden mecz nie powtórzy się na dwóch różnych kuponach w tym samym rzucie[span_1](start_span)[span_1](end_span)
     global_used_matches = set()
     
     for cand in candidates_to_send:
         if generated_akos >= MAX_AKO_PER_CYCLE:
             break
             
-        # Odrzucamy kupon, jeśli choć jeden mecz był już użyty na wcześniejszej taśmie w tym cyklu[span_2](start_span)[span_2](end_span)
         if any(m in global_used_matches for m in cand['matches']):
             continue
             
@@ -210,7 +212,6 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
             cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
             conn.commit()
             
-            # Blokujemy te mecze do końca cyklu
             for m in cand['matches']:
                 global_used_matches.add(m)
                 
@@ -229,20 +230,18 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
             generated_akos += 1
             
     conn.close()
-    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} w 100% unikalnych kuponów AKO3.")
+    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych kuponów AKO3.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Maszyna uruchomiona. Robię natychmiastowy skan startowy, a potem lecimy cyklicznie co 3 godziny...")
+        print("[SYSTEM PITOS] Maszyna uruchomiona z filtrem 24h. Robię natychmiastowy skan...")
         
-        # Natychmiastowy zrzut po starcie
         try:
-            run_analysis_cycle(reason="Start Maszyny Pitosu")
+            run_analysis_cycle(reason="Start Maszyny Pitosu (Dzienne Value)")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
-        # Ciągła pętla interwałowa co 3 godziny (10800 sekund)
         last_run_timestamp = time.time()
         THREE_HOURS_IN_SECONDS = 3 * 3600
         
