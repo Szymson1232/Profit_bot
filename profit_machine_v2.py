@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.2 — Clean, responsive multi-sport betting selector (ASCII sanitized).
+# PITOS v5.3 — Multi-sport betting selector with loosened thresholds & 48h lookahead.
 
 import os
 import sys
@@ -16,25 +16,25 @@ import requests
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# ================= CONFIGURATION =================
+# ================= CONFIGURATION (ROZLUŹNIONE) =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
-MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "30"))
+MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "35"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.05"))
-MAX_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "1.80"))
-MIN_AKO = float(os.getenv("MIN_AKO_TOTAL", "2.00"))
-MAX_AKO = float(os.getenv("MAX_AKO_TOTAL", "3.40"))
+MAX_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.00"))  # Zwiększone do 2.00
+MIN_AKO = float(os.getenv("MIN_AKO_TOTAL", "1.85"))    # Lekko poszerzony dół AKO
+MAX_AKO = float(os.getenv("MAX_AKO_TOTAL", "3.60"))    # Zwiększona góra AKO
 AKO_LEGS = int(os.getenv("AKO_LEGS", "3"))
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.55"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "24"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.48"))  # Obniżone z 0.55
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "48"))            # Zwiększone do 48h (cały jutrzejszy dzień)
 
 SPORT_ALLOWLIST = {
     s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby").split(",")
@@ -49,7 +49,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.2")
+log = logging.getLogger("pitos-v5.3")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -96,7 +96,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.2 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.3 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -224,7 +224,7 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.2 scan cycle started...", flush=True)
+    print("-> PITOS v5.3 scan cycle started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports found: {len(sports)}", flush=True)
 
@@ -287,7 +287,7 @@ def run_cycle():
         stake_u = 3 if tot <= 2.30 else (2 if tot <= 2.75 else 1)
         stake_pln = stake_u * 25
 
-        lines = [f"<b>🥷 PITOS v5.2 | ŚWIEŻE AKO{AKO_LEGS} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.3 | ŚWIEŻE AKO{AKO_LEGS} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -327,13 +327,13 @@ def run_cycle():
 
 # ================= MAIN =================
 def main():
-    print("-> PITOS v5.2 starting up...", flush=True)
+    print("-> PITOS v5.3 starting up...", flush=True)
     if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("-> CRITICAL: Missing environment variables!", flush=True)
         sys.exit(1)
 
     init_db()
-    print(f"-> PITOS v5.2 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
+    print(f"-> PITOS v5.3 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
 
     while True:
         start = time.monotonic()
