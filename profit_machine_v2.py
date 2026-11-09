@@ -94,5 +94,3 @@ def db_session():
     try:
         yield conn
         conn.commit()
-                
-            time.sleep(60)
