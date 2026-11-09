@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.16 — Open-night engine (all sports scanned, zero allowlist restrictions, strict 10/11 night window).
+# PITOS v5.17 — Strict anti-duplicate engine with NFL exclusion & team history memory.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.16 Active")
+        self.wfile.write(b"PITOS v5.17 Active")
     def log_message(self, format, *args):
         pass
 
@@ -58,7 +58,7 @@ MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.35"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "12")) # Ścisła nocka 10/11
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "12"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -68,10 +68,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.16")
+log = logging.getLogger("pitos-v5.17")
 session = requests.Session()
 
 MEM_EVENTS = set()
+MEM_TEAMS = set()
 MEM_SIGNATURES = set()
 
 
@@ -91,6 +92,8 @@ def init_db():
                 event_id TEXT PRIMARY KEY,
                 sport_key TEXT NOT NULL,
                 event_name TEXT NOT NULL,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
                 coupon_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL
@@ -107,15 +110,17 @@ def init_db():
         """)
         
         cur = conn.cursor()
-        cur.execute("SELECT event_id FROM sent_events")
+        cur.execute("SELECT event_id, home_team, away_team FROM sent_events")
         for row in cur.fetchall():
             MEM_EVENTS.add(row[0])
+            if row[1]: MEM_TEAMS.add(row[1].strip().lower())
+            if row[2]: MEM_TEAMS.add(row[2].strip().lower())
             
         cur.execute("SELECT signature FROM coupons")
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.16 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.17 DB initialized. Loaded {len(MEM_EVENTS)} events, {len(MEM_TEAMS)} unique teams in memory.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -161,15 +166,18 @@ def parse_time(val):
         return None
 
 def get_sports():
-    """Pobiera WSZYSTKIE dostępne dyscypliny, odrzucając tylko NBA i rynki długoterminowe"""
     sports = api_get("/sports/")
     active = []
     for s in sports:
         if not s.get("active", True):
             continue
         key = s.get("key", "").lower()
-        # Wykluczamy wyłącznie NBA oraz outrights/futures
-        if any(b in key for b in ["winner", "futures", "outrights", "championship", "nba", "basketball_nba"]):
+        # Bezwzględne wykluczenie NBA, NFL i rynków długoterminowych
+        banned_keywords = [
+            "winner", "futures", "outrights", "championship", 
+            "nba", "basketball_nba", "americanfootball", "gridiron"
+        ]
+        if any(b in key for b in banned_keywords):
             continue
         active.append(key)
     return active
@@ -185,12 +193,18 @@ def extract_candidates(sport_key):
 
     for ev in events:
         ev_id = ev.get("id")
-        if not ev_id:
+        if not ev_id or ev_id in MEM_EVENTS:
             continue
 
         commence = parse_time(ev.get("commence_time"))
-        # Ścisłe okno nocne 10/11
         if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
+            continue
+
+        home = ev.get("home_team", "Unknown")
+        away = ev.get("away_team", "Unknown")
+
+        # Twarda blokada drużyn, które już kiedykolwiek były wysłane w kuponach
+        if home.strip().lower() in MEM_TEAMS or away.strip().lower() in MEM_TEAMS:
             continue
 
         bk = None
@@ -225,8 +239,6 @@ def extract_candidates(sport_key):
         if p_sum <= 0:
             continue
 
-        home = ev.get("home_team", "Unknown")
-        away = ev.get("away_team", "Unknown")
         ev_name = f"{home} vs {away}"
 
         for name, pr, raw_p in probs:
@@ -235,6 +247,8 @@ def extract_candidates(sport_key):
                 candidates.append({
                     "event_id": ev_id,
                     "event": ev_name,
+                    "home_team": home,
+                    "away_team": away,
                     "selection": name,
                     "odds": pr,
                     "prob": norm_p,
@@ -245,9 +259,9 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.16 open-night scan started...", flush=True)
+    print("-> PITOS v5.17 anti-duplicate scan started...", flush=True)
     sports = get_sports()
-    print(f"-> Total active sports pooled (no allowlist limits): {len(sports)}", flush=True)
+    print(f"-> Active sports pooled (NFL/NBA banned, memory checked): {len(sports)}", flush=True)
 
     all_candidates = []
     for sp in sports:
@@ -256,10 +270,10 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates for tonight: {len(candidates)}", flush=True)
+    print(f"-> Total unique fresh candidates: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in tonight's open window.", flush=True)
+        print("-> No new fresh candidates found in window.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -271,24 +285,30 @@ def run_cycle():
         if c["odds"] >= 2.20:
             sig_source = f"{c['event_id']}:{c['selection']}"
             sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-            valid_coupons.append({
-                "combo": [c],
-                "total_odds": c["odds"],
-                "signature": sig,
-                "event_ids": [c["event_id"]],
-                "type": "SINGIEL NOCNY"
-            })
+            if sig not in MEM_SIGNATURES:
+                valid_coupons.append({
+                    "combo": [c],
+                    "total_odds": c["odds"],
+                    "signature": sig,
+                    "event_ids": [c["event_id"]],
+                    "type": "SINGIEL NOCNY"
+                })
 
     for r in [2, 3]:
         for combo in combinations(candidates, r):
             e_ids = [c["event_id"] for c in combo]
             if len(set(e_ids)) != r:
                 continue
+            if any(eid in MEM_EVENTS for eid in e_ids):
+                continue
 
             total_odds = math.prod(c["odds"] for c in combo)
             if MIN_TOTAL_ODDS <= total_odds <= MAX_TOTAL_ODDS:
                 sig_source = "|".join(sorted(f"{c['event_id']}:{c['selection']}" for c in combo))
                 sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
+
+                if sig in MEM_SIGNATURES:
+                    continue
 
                 valid_coupons.append({
                     "combo": combo,
@@ -299,7 +319,7 @@ def run_cycle():
                 })
 
     random.shuffle(valid_coupons)
-    print(f"-> Valid open-night coupons found: {len(valid_coupons)}", flush=True)
+    print(f"-> Valid non-duplicate coupons found: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -309,13 +329,15 @@ def run_cycle():
             break
         if any(eid in used_in_cycle for eid in coupon["event_ids"]):
             continue
+        if any(eid in MEM_EVENTS for eid in coupon["event_ids"]):
+            continue
 
         tot = coupon["total_odds"]
         c_type = coupon["type"]
         stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
         stake_pln = stake_u * 25
 
-        lines = [f"<b>🥷 PITOS v5.16 | {c_type} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.17 | {c_type} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -336,11 +358,18 @@ def run_cycle():
                 )
                 for item in coupon["combo"]:
                     conn.execute(
-                        "INSERT OR IGNORE INTO sent_events (event_id, sport_key, event_name, coupon_id, status, created_at) VALUES (?, ?, ?, ?, 'sent', ?)",
-                        (item["event_id"], item["sport"], item["event"], c_id, now_str)
+                        "INSERT OR IGNORE INTO sent_events (event_id, sport_key, event_name, home_team, away_team, coupon_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)",
+                        (item["event_id"], item["sport"], item["event"], item["home_team"], item["away_team"], c_id, now_str)
                     )
 
             telegram_send(msg)
+            MEM_SIGNATURES.add(coupon["signature"])
+            for eid in coupon["event_ids"]:
+                MEM_EVENTS.add(eid)
+            for item in coupon["combo"]:
+                if item["home_team"]: MEM_TEAMS.add(item["home_team"].strip().lower())
+                if item["away_team"]: MEM_TEAMS.add(item["away_team"].strip().lower())
+
             used_in_cycle.update(coupon["event_ids"])
             sent += 1
             print(f"-> Published {c_type} coupon {c_id} successfully!", flush=True)
@@ -373,7 +402,7 @@ def background_worker():
 
 # ================= MAIN =================
 def main():
-    print("-> PITOS v5.16 starting up...", flush=True)
+    print("-> PITOS v5.17 starting up...", flush=True)
     if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("-> CRITICAL: Missing environment variables!", flush=True)
         sys.exit(1)
