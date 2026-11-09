@@ -10,16 +10,14 @@ API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Zdrowa, działająca baza dyscyplin (bez błędów 404)
+# Zostawiamy tylko europejską piłkę nożną i Euroleague, żeby odciąć amerykańskie nocne NBA
 SPORTS_TO_CHECK = [
     "soccer_epl",                  
     "soccer_spain_la_liga",        
     "soccer_germany_bundesliga",    
     "soccer_italy_serie_a",        
     "soccer_france_ligue_one",     
-    "basketball_nba",              
-    "basketball_euroleague",       
-    "icehockey_nhl"                
+    "basketball_euroleague"       
 ]
 
 # Parametry AKO3 pod Betclic Bez Podatku
@@ -29,14 +27,14 @@ MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.70
 MAX_AKO_EVENTS = 3
 
-MAX_AKO_PER_CYCLE = 10
+MAX_AKO_PER_CYCLE = 5
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Clean Active Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Hard Clean Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -110,8 +108,16 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
+    # Okno operacyjne: tylko mecze w ciągu najbliższych 18 godzin
     min_allowed_date = now
-    max_allowed_date = now + timedelta(hours=24)
+    max_allowed_date = now + timedelta(hours=18)
+    
+    # Twarda czarna lista drużyn, które uporczywie wracały z nocy
+    banned_keywords = [
+        "Toronto", "Memphis", "Houston", "Denver", "Phoenix", 
+        "San Antonio", "Charlotte", "Cleveland", "Detroit", "Washington",
+        "Vikings", "Bills", "Rockets", "Nuggets", "Suns", "Spurs"
+    ]
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -124,8 +130,13 @@ def extract_favorites(events, sport_name):
             if event_time < min_allowed_date or event_time > max_allowed_date:
                 continue
             
-        home_team = event.get('home_team')
-        away_team = event.get('away_team')
+        home_team = event.get('home_team', '')
+        away_team = event.get('away_team', '')
+        
+        # Jeśli nazwa drużyny zawiera cokolwiek z czarnej listy - odrzucamy natychmiast!
+        if any(banned in home_team or banned in away_team for banned in banned_keywords):
+            continue
+            
         match_key = f"{home_team} vs {away_team}"
         
         if match_key in seen_matches:
@@ -162,7 +173,7 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Pobrano świeże zdarzenia: {len(all_favorites)}")
+    print(f"[ANALIZA] Pobrano czyste europejskie zdarzenia: {len(all_favorites)}")
     
     candidates_to_send = []
     
@@ -211,7 +222,7 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (ŚWIEŻY SKAN) 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (EUROPEAN VALUE) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -229,10 +240,10 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start z nowym kluczem API...")
+        print("[SYSTEM PITOS] Start w trybie Hard Clean Mode...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start z nowym API")
+            run_analysis_cycle(reason="Wymuszony start po czystce amerykańskiej")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
