@@ -144,7 +144,7 @@ def init_db():
 
 
 def event_already_used(event_id):
-    """Checks across ALL statuses (reserved or sent) to strictly prevent event reuse."""
+    """Checks across ALL statuses to strictly prevent event reuse."""
     with db_session() as conn:
         row = conn.execute(
             "SELECT 1 FROM sent_events WHERE event_id = ? LIMIT 1",
@@ -440,7 +440,6 @@ def build_candidates(candidates):
         if len(set(event_ids)) != AKO_LEGS:
             continue
 
-        # Strict multi-layer check against historical database
         if any(event_already_used(eid) for eid in event_ids):
             continue
 
@@ -463,4 +462,382 @@ def build_candidates(candidates):
             valid.append({
                 "combo": combo,
                 "total_odds": total_odds,
-                "signature
+                "signature": signature,
+                "event_ids": event_ids,
+            })
+
+    valid.sort(
+        key=lambda coupon: (
+            math.prod(
+                item["market_probability"]
+                for item in coupon["combo"]
+            ),
+            -coupon["total_odds"],
+        ),
+        reverse=True,
+    )
+
+    return valid
+
+
+def format_coupon(coupon, number):
+    total_odds = coupon["total_odds"]
+
+    if total_odds <= 2.30:
+        stake_units = 3
+        stake_pln = 75
+    elif total_odds <= 2.75:
+        stake_units = 2
+        stake_pln = 50
+    else:
+        stake_units = 1
+        stake_pln = 25
+
+    lines = [
+        f"<b>🥷 PITOS v4 | AKO{AKO_LEGS} #{number}</b>",
+        ""
+    ]
+
+    for index, item in enumerate(coupon["combo"], 1):
+        event = html.escape(item["event"])
+        selection = html.escape(item["selection"])
+        sport = html.escape(item["sport"])
+
+        kickoff = item["commence"].strftime(
+            "%d.%m %H:%M UTC"
+        )
+
+        lines.append(
+            f"{index}. <b>{event}</b>\n"
+            f"   Typ: <i>{selection}</i> | "
+            f"Kurs: <b>{item['odds']:.2f}</b>\n"
+            f"   {sport} | {kickoff}"
+        )
+
+    lines.extend([
+        "",
+        f"📊 <b>Kurs łączny: {total_odds:.2f}</b>",
+        f"💰 <b>Zalecana stawka: {stake_units}j ({stake_pln} zł)</b>",
+    ])
+
+    return "\n".join(lines)
+
+
+def reserve_coupon(coupon, message):
+    now = datetime.now(timezone.utc).isoformat()
+    coupon_id = coupon["signature"][:24]
+
+    try:
+        with db_session() as conn:
+            for eid in coupon["event_ids"]:
+                exists = conn.execute(
+                    "SELECT 1 FROM sent_events WHERE event_id = ? LIMIT 1",
+                    (eid,)
+                ).fetchone()
+                if exists:
+                    return None
+
+            conn.execute(
+                "INSERT INTO coupons "
+                "(coupon_id, signature, message, status, created_at) "
+                "VALUES (?, ?, ?, 'reserved', ?)",
+                (
+                    coupon_id,
+                    coupon["signature"],
+                    message,
+                    now
+                ),
+            )
+
+            for item in coupon["combo"]:
+                conn.execute(
+                    "INSERT INTO sent_events "
+                    "(event_id, sport_key, event_name, commence_time, "
+                    "coupon_id, status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'reserved', ?)",
+                    (
+                        item["event_id"],
+                        item["sport"],
+                        item["event"],
+                        item["commence"].isoformat(),
+                        coupon_id,
+                        now,
+                    ),
+                )
+
+        return coupon_id
+
+    except sqlite3.IntegrityError:
+        log.info(
+            "Coupon/event reservation already exists; skipping."
+        )
+        return None
+
+
+def mark_coupon_sent(coupon_id):
+    now = datetime.now(timezone.utc).isoformat()
+
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE coupons SET status='sent', sent_at=? "
+            "WHERE coupon_id=?",
+            (now, coupon_id),
+        )
+
+        conn.execute(
+            "UPDATE sent_events SET status='sent', sent_at=? "
+            "WHERE coupon_id=?",
+            (now, coupon_id),
+        )
+
+
+def record_scan(
+    sports_count,
+    events_count,
+    candidates_count,
+    sent_count,
+    note=""
+):
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO scan_log "
+            "(scanned_at, sports_count, events_count, "
+            "candidates_count, coupons_sent, note) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                sports_count,
+                events_count,
+                candidates_count,
+                sent_count,
+                note[:500],
+            ),
+        )
+
+
+# ------------------------- MAIN SCAN CYCLE -------------------------
+
+def run_cycle(reason="scheduled"):
+    log.info(
+        "===== PITOS v4 scan start: %s =====",
+        reason
+    )
+
+    sports = get_active_sports()
+
+    log.info(
+        "Sports selected for scan: %d",
+        len(sports)
+    )
+
+    candidates = []
+    events_seen = 0
+    bookmaker_seen = False
+
+    for sport in sports:
+        sport_key = sport.get("key")
+
+        try:
+            events = fetch_sport_events(sport_key)
+            events_seen += len(events)
+
+            for event in events:
+                if find_betclic_bookmaker(event):
+                    bookmaker_seen = True
+
+                candidate = extract_candidate(
+                    event,
+                    sport_key
+                )
+
+                if candidate:
+                    candidates.append(candidate)
+
+            time.sleep(0.25)
+
+        except requests.RequestException as exc:
+            log.exception(
+                "API request failed for %s: %s",
+                sport_key,
+                exc
+            )
+
+        except Exception as exc:
+            log.exception(
+                "Unexpected error while scanning %s: %s",
+                sport_key,
+                exc
+            )
+
+    unique = {}
+
+    for candidate in candidates:
+        unique.setdefault(
+            candidate["event_id"],
+            candidate
+        )
+
+    candidates = list(unique.values())
+
+    log.info(
+        "Events scanned=%d | unique eligible candidates=%d | "
+        "Betclic found=%s",
+        events_seen,
+        len(candidates),
+        bookmaker_seen
+    )
+
+    if not bookmaker_seen:
+        note = (
+            "Betclic bookmaker was not present in the API response. "
+            "No coupon published; check whether The Odds API supplies "
+            "Betclic for the selected sports/region."
+        )
+
+        log.error(note)
+
+        record_scan(
+            len(sports),
+            events_seen,
+            len(candidates),
+            0,
+            note
+        )
+
+        return
+
+    possible_coupons = build_candidates(candidates)
+
+    log.info(
+        "Valid AKO combinations: %d",
+        len(possible_coupons)
+    )
+
+    used_this_cycle = set()
+    sent_count = 0
+
+    for coupon in possible_coupons:
+        if sent_count >= MAX_AKOS_PER_CYCLE:
+            break
+
+        if any(
+            event_id in used_this_cycle
+            for event_id in coupon["event_ids"]
+        ):
+            continue
+
+        if any(
+            event_already_used(event_id)
+            for event_id in coupon["event_ids"]
+        ):
+            continue
+
+        message = format_coupon(
+            coupon,
+            sent_count + 1
+        )
+
+        coupon_id = reserve_coupon(
+            coupon,
+            message
+        )
+
+        if coupon_id is None:
+            continue
+
+        try:
+            telegram_send(message)
+
+            mark_coupon_sent(coupon_id)
+
+            used_this_cycle.update(
+                coupon["event_ids"]
+            )
+
+            sent_count += 1
+
+            log.info(
+                "Published AKO coupon %s",
+                coupon_id
+            )
+
+        except Exception as exc:
+            log.exception(
+                "Telegram delivery failed or is uncertain for %s. "
+                "Events remain reserved to prevent duplicates: %s",
+                coupon_id,
+                exc
+            )
+
+    record_scan(
+        len(sports),
+        events_seen,
+        len(candidates),
+        sent_count,
+        note="OK" if sent_count else "No coupon published"
+    )
+
+    log.info(
+        "===== PITOS v4 scan end; coupons sent=%d =====",
+        sent_count
+    )
+
+
+# ------------------------- MAIN -------------------------
+
+def main():
+    if not verify_environment():
+        raise SystemExit(1)
+
+    init_db()
+
+    log.info(
+        "PITOS v4 started. SQLite database: %s",
+        SQLITE_PATH
+    )
+
+    log.info(
+        "Settings: bookmaker=%s | AKO legs=%d | "
+        "total odds %.2f–%.2f | max coupons/cycle=%d | interval=%ds",
+        BOOKMAKER_NAME,
+        AKO_LEGS,
+        MIN_AKO_TOTAL,
+        MAX_AKO_TOTAL,
+        MAX_AKOS_PER_CYCLE,
+        SCAN_INTERVAL_SECONDS
+    )
+
+    first_cycle = True
+
+    while True:
+        started = time.monotonic()
+
+        try:
+            run_cycle(
+                "startup" if first_cycle else "scheduled"
+            )
+
+            first_cycle = False
+
+        except Exception:
+            log.exception(
+                "Cycle crashed; process will stay alive."
+            )
+
+        elapsed = time.monotonic() - started
+
+        sleep_for = max(
+            30,
+            SCAN_INTERVAL_SECONDS - int(elapsed)
+        )
+
+        log.info(
+            "Next scan in approximately %d seconds.",
+            sleep_for
+        )
+
+        time.sleep(sleep_for)
+
+
+if __name__ == "__main__":
+    main()
