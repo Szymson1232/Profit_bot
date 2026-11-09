@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.13 — Fully verified, zero-syntax-error worker.
+# PITOS v5.14 — Clean, error-free production worker.
 
 import os
 import sys
@@ -53,7 +53,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.13")
+log = logging.getLogger("pitos-v5.14")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -65,7 +65,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.13 is up and running!")
+        self.wfile.write(b"PITOS v5.14 is up and running!")
     def log_message(self, format, *args):
         pass
 
@@ -118,7 +118,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.13 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.14 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -226,41 +226,4 @@ def extract_candidates(sport_key):
         if p_sum <= 0:
             continue
 
-        home = ev.get("home_team", "Unknown")
-        away = ev.get("away_team", "Unknown")
-        ev_name = f"{home} vs {away}"
-
-        for name, pr, raw_p in probs:
-            norm_p = raw_p / p_sum
-            if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
-                candidates.append({
-                    "event_id": ev_id,
-                    "event": ev_name,
-                    "selection": name,
-                    "odds": pr,
-                    "prob": norm_p,
-                    "sport": sport_key,
-                    "commence": commence
-                })
-    return candidates
-
-
-def run_cycle():
-    print("-> PITOS v5.13 scan cycle started...", flush=True)
-    sports = get_sports()
-    print(f"-> Active sports found: {len(sports)}", flush=True)
-
-    all_candidates = []
-    for sp in sports:
-        all_candidates.extend(extract_candidates(sp))
-        time.sleep(0.05)
-
-    unique_map = {c["event_id"]: c for c in all_candidates}
-    candidates = list(unique_map.values())
-    print(f"-> Total unique candidates: {len(candidates)}", flush=True)
-
-    if not candidates:
-        print("-> No candidates found in current window.", flush=True)
-        return
-
-    candidates.sort(key=lambda x: (x["prob
+        home = ev
