@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.7 — Night betting selector with health check server and fixed f-string syntax.
+# PITOS v5.8 — Ultimate Night Striker (Aggressive night scraping & health check).
 
 import os
 import sys
@@ -27,21 +27,21 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 PORT = int(os.getenv("PORT", "8080"))
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
-MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "35"))
+SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600")) # Szybszy skan co godzinę w nocy
+MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "40"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.60"))
-MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "2.00"))
-MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "3.80"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.80"))
+MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90")) # Lekko zeszło żeby łapać duble bez podatku
+MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.45"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "14"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.40")) # Agresywne zniżenie na nockę
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "18")) # Okno nocno-poranne
 
 SPORT_ALLOWLIST = {
-    s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby").split(",")
+    s.strip() for s in os.getenv("SPORT_ALLOWLIST", "soccer,icehockey,tennis,eports,americanfootball,baseball,gridiron,cricket,rugby,basketball_ncaa").split(",")
     if s.strip()
 }
 
@@ -53,7 +53,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.7")
+log = logging.getLogger("pitos-v5.8")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -65,7 +65,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.7 is up and running!")
+        self.wfile.write(b"PITOS v5.8 is up and running!")
     def log_message(self, format, *args):
         pass
 
@@ -118,7 +118,7 @@ def init_db():
         for row in cur.fetchall():
             MEM_SIGNATURES.add(row[0])
             
-    print(f"-> PITOS v5.7 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
+    print(f"-> PITOS v5.8 DB initialized. Loaded {len(MEM_EVENTS)} events and {len(MEM_SIGNATURES)} signatures.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -170,7 +170,7 @@ def get_sports():
         if not s.get("active", True):
             continue
         key = s.get("key", "").lower()
-        if any(b in key for b in ["winner", "futures", "outrights", "championship", "basketball", "nba"]):
+        if any(b in key for b in ["winner", "futures", "outrights", "championship", "nba"]):
             continue
         if not SPORT_ALLOWLIST or any(a in key for a in SPORT_ALLOWLIST) or "ncaa" in key or "college" in key:
             active.append(key)
@@ -246,21 +246,21 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.7 night scan cycle started...", flush=True)
+    print("-> PITOS v5.8 night aggressive scan started...", flush=True)
     sports = get_sports()
     print(f"-> Active sports found: {len(sports)}", flush=True)
 
     all_candidates = []
     for sp in sports:
         all_candidates.extend(extract_candidates(sp))
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates for tonight: {len(candidates)}", flush=True)
+    print(f"-> Total unique candidates for immediate play: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in this night window.", flush=True)
+        print("-> No candidates found in current window.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -306,7 +306,7 @@ def run_cycle():
                 })
 
     random.shuffle(valid_coupons)
-    print(f"-> Valid tonight coupons found: {len(valid_coupons)}", flush=True)
+    print(f"-> Valid immediate coupons found: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -326,8 +326,7 @@ def run_cycle():
         stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
         stake_pln = stake_u * 25
 
-        # POPRAWIONA LINIJKA BEZ UCIĘCIA
-        lines = [f"<b>🥷 PITOS v5.7 | {c_type} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.8 | {c_type} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
@@ -367,7 +366,7 @@ def run_cycle():
 
 # ================= MAIN =================
 def main():
-    print("-> PITOS v5.7 starting up...", flush=True)
+    print("-> PITOS v5.8 starting up...", flush=True)
     if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("-> CRITICAL: Missing environment variables!", flush=True)
         sys.exit(1)
@@ -376,7 +375,7 @@ def main():
     t.start()
 
     init_db()
-    print(f"-> PITOS v5.7 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
+    print(f"-> PITOS v5.8 fully initialized. Scan interval: {SCAN_INTERVAL}s", flush=True)
 
     while True:
         start = time.monotonic()
