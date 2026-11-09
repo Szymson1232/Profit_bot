@@ -10,7 +10,6 @@ API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Pełny globalny arsenał: Europa na dzień + Ameryka na nockę + cała reszta świata
 SPORTS_TO_CHECK = [
     "soccer_epl",                  
     "soccer_spain_la_liga",        
@@ -20,10 +19,10 @@ SPORTS_TO_CHECK = [
     "basketball_euroleague",
     "soccer_netherlands_eredivisie",
     "soccer_poland_ekstraklasa",
-    "basketball_nba",              # Wracają ulubione nocne ligi!
-    "icehockey_nhl",               # NHL
-    "americanfootball_nfl",        # NFL
-    "baseball_mlb"                 # MLB
+    "basketball_nba",
+    "icehockey_nhl",
+    "americanfootball_nfl",
+    "baseball_mlb"
 ]
 
 # Parametry AKO3 pod Betclic Bez Podatku
@@ -33,14 +32,14 @@ MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.90
 MAX_AKO_EVENTS = 3
 
-MAX_AKO_PER_CYCLE = 3
+MAX_AKO_PER_CYCLE = 2
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Dynamic Day/Night Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Strict Time Guard Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -50,6 +49,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS sent_akos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ako_signature TEXT UNIQUE,
+            timestamp TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sent_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_name TEXT UNIQUE,
             timestamp TEXT
         )
     """)
@@ -78,7 +84,7 @@ def fetch_odds_for_sport(sport):
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
     params = {
         "apiKey": API_KEY,
-        "regions": "eu,us",  # Pobieramy regiony EU oraz US dla pełnej oferty amerykańskiej
+        "regions": "eu,us",
         "markets": "h2h",
         "oddsFormat": "decimal"
     }
@@ -114,9 +120,14 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    # Dynamiczne okno: szukamy meczów w przedziale najbliższych 18 godzin
+    # Okno operacyjne na najbliższe 24 godziny
     min_allowed_date = now - timedelta(hours=1)
-    max_allowed_date = now + timedelta(hours=18)
+    max_allowed_date = now + timedelta(hours=24)
+    
+    is_american_sport = sport_name in ["basketball_nba", "icehockey_nhl", "americanfootball_nfl", "baseball_mlb"]
+    
+    # Aktualna godzina w Polsce (UTC + 1 / CET)
+    local_hour = (now.hour + 1) % 24
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -128,6 +139,13 @@ def extract_favorites(events, sport_name):
             
             if event_time < min_allowed_date or event_time > max_allowed_date:
                 continue
+            
+            event_local_hour = (event_time.hour + 1) % 24
+            
+            # ŻELAZNA ZASADA CZASOWA: Jeśli to sport amerykański, a jest dzień (08:00 - 20:00 PL), ODRZUCAMY GO CAŁKOWICIE
+            if is_american_sport and (8 <= local_hour < 20):
+                if not (22 <= event_local_hour or event_local_hour < 6):
+                    continue
             
         home_team = event.get('home_team', '')
         away_team = event.get('away_team', '')
@@ -158,7 +176,7 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl Dynamiczny"):
+def run_analysis_cycle(reason="Cykl Time-Guard"):
     print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
     all_favorites = []
@@ -168,14 +186,13 @@ def run_analysis_cycle(reason="Cykl Dynamiczny"):
         all_favorites.extend(favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Pobrano zdarzenia rynkowe: {len(all_favorites)}")
+    print(f"[ANALIZA] Pobrano zweryfikowane zdarzenia: {len(all_favorites)}")
     
     candidates_to_send = []
     
     for combo in combinations(all_favorites, MAX_AKO_EVENTS):
         matches = [item['match'] for item in combo]
         
-        # Zero powtórzeń drużyn na jednym kuponie
         if len(set(matches)) != len(matches):
             continue
             
@@ -184,7 +201,6 @@ def run_analysis_cycle(reason="Cykl Dynamiczny"):
             total_odds *= item['odds']
             
         if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
-            # Unikalny podpis kuponu zapobiegający duplikatom
             signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
             candidates_to_send.append({
                 'signature': signature,
@@ -208,29 +224,43 @@ def run_analysis_cycle(reason="Cykl Dynamiczny"):
         if any(m in global_used_matches for m in cand['matches']):
             continue
             
-        # Sprawdzenie w bazie SQLite czy ten kupon już kiedyś poszedł (zero powtórzeń na kanale!)
+        # Sprawdzenie globalnego unikalnego podpisu kuponu
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
-        if cursor.fetchone() is None:
-            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
-            conn.commit()
+        if cursor.fetchone() is not None:
+            continue
             
-            for m in cand['matches']:
-                global_used_matches.add(m)
+        # Sprawdzenie czy którykolwiek mecz z kuponu nie był już grany w ciągu ostatnich 24h
+        match_already_sent = False
+        for m in cand['matches']:
+            cursor.execute("SELECT id FROM sent_matches WHERE match_name = ?", (m,))
+            if cursor.fetchone() is not None:
+                match_already_sent = True
+                break
                 
-            stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
+        if match_already_sent:
+            continue
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (DYNAMIC MASTER) 💸</b>\n\n"
-            for idx, item in enumerate(cand['combo'], 1):
-                msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
+        # Zapisz kupon i mecze do bazy
+        now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
+        for m in cand['matches']:
+            cursor.execute("INSERT OR IGNORE INTO sent_matches (match_name, timestamp) VALUES (?, ?)", (m, now_str))
+            global_used_matches.add(m)
+        conn.commit()
             
-            msg += f"\n📊 <b>Kurs Łączny: {cand['total_odds']:.2f}</b>"
-            msg += f"\n🎯 <b>Status:</b> {confidence}"
-            msg += f"\n💰 <b>Stawka: {stake}</b>"
-            msg += f"\n💎 <i>Betclic (BEZ PODATKU) | Let's Make That Cash</i>"
-            
-            send_telegram_message(msg)
-            generated_akos += 1
+        stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
+        
+        msg = f"<b>💸 CASH MACHINE AKO3 (STRICT MODE) 💸</b>\n\n"
+        for idx, item in enumerate(cand['combo'], 1):
+            msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
+        
+        msg += f"\n📊 <b>Kurs Łączny: {cand['total_odds']:.2f}</b>"
+        msg += f"\n🎯 <b>Status:</b> {confidence}"
+        msg += f"\n💰 <b>Stawka: {stake}</b>"
+        msg += f"\n💎 <i>Betclic (BEZ PODATKU) | Let's Make That Cash</i>"
+        
+        send_telegram_message(msg)
+        generated_akos += 1
             
     conn.close()
     print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych kuponów.")
@@ -238,10 +268,10 @@ def run_analysis_cycle(reason="Cykl Dynamiczny"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie Dynamic Day/Night...")
+        print("[SYSTEM PITOS] Start w trybie Strict Time Guard...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start dynamiczny")
+            run_analysis_cycle(reason="Wymuszony start Strict")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
