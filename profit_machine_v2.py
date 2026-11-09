@@ -10,7 +10,7 @@ API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Dodajemy szerokie, globalne ligi piłkarskie i koszykarske, które grają codziennie o każdej porze
+# Pełny globalny arsenał: Europa na dzień + Ameryka na nockę + cała reszta świata
 SPORTS_TO_CHECK = [
     "soccer_epl",                  
     "soccer_spain_la_liga",        
@@ -20,14 +20,17 @@ SPORTS_TO_CHECK = [
     "basketball_euroleague",
     "soccer_netherlands_eredivisie",
     "soccer_poland_ekstraklasa",
-    "basketball_nba"              # Włączamy chwilowo NBA, żeby przepchać popołudniowe/zaległe kursy
+    "basketball_nba",              # Wracają ulubione nocne ligi!
+    "icehockey_nhl",               # NHL
+    "americanfootball_nfl",        # NFL
+    "baseball_mlb"                 # MLB
 ]
 
 # Parametry AKO3 pod Betclic Bez Podatku
-MIN_ODDS_SINGLE = 1.05
-MAX_ODDS_SINGLE = 1.80
-MIN_AKO_TOTAL = 1.90
-MAX_AKO_TOTAL = 3.00
+MIN_ODDS_SINGLE = 1.08
+MAX_ODDS_SINGLE = 1.70
+MIN_AKO_TOTAL = 1.95
+MAX_AKO_TOTAL = 2.90
 MAX_AKO_EVENTS = 3
 
 MAX_AKO_PER_CYCLE = 3
@@ -37,7 +40,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Force Drop Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Dynamic Day/Night Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -75,7 +78,7 @@ def fetch_odds_for_sport(sport):
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
     params = {
         "apiKey": API_KEY,
-        "regions": "eu",
+        "regions": "eu,us",  # Pobieramy regiony EU oraz US dla pełnej oferty amerykańskiej
         "markets": "h2h",
         "oddsFormat": "decimal"
     }
@@ -111,11 +114,9 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    min_allowed_date = now - timedelta(hours=2)
-    max_allowed_date = now + timedelta(hours=48) # Szersze okno czasowe
-    
-    # Minimalna czarna lista tylko na najbardziej oporne zespoły
-    banned_keywords = []
+    # Dynamiczne okno: szukamy meczów w przedziale najbliższych 18 godzin
+    min_allowed_date = now - timedelta(hours=1)
+    max_allowed_date = now + timedelta(hours=18)
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -130,9 +131,6 @@ def extract_favorites(events, sport_name):
             
         home_team = event.get('home_team', '')
         away_team = event.get('away_team', '')
-        
-        if any(banned in home_team or banned in away_team for banned in banned_keywords):
-            continue
             
         match_key = f"{home_team} vs {away_team}"
         
@@ -160,7 +158,7 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl Force Drop"):
+def run_analysis_cycle(reason="Cykl Dynamiczny"):
     print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
     all_favorites = []
@@ -177,6 +175,7 @@ def run_analysis_cycle(reason="Cykl Force Drop"):
     for combo in combinations(all_favorites, MAX_AKO_EVENTS):
         matches = [item['match'] for item in combo]
         
+        # Zero powtórzeń drużyn na jednym kuponie
         if len(set(matches)) != len(matches):
             continue
             
@@ -185,6 +184,7 @@ def run_analysis_cycle(reason="Cykl Force Drop"):
             total_odds *= item['odds']
             
         if MIN_AKO_TOTAL <= total_odds <= MAX_AKO_TOTAL:
+            # Unikalny podpis kuponu zapobiegający duplikatom
             signature = "_".join(sorted([f"{i['match']}:{i['selection']}" for i in combo]))
             candidates_to_send.append({
                 'signature': signature,
@@ -208,6 +208,7 @@ def run_analysis_cycle(reason="Cykl Force Drop"):
         if any(m in global_used_matches for m in cand['matches']):
             continue
             
+        # Sprawdzenie w bazie SQLite czy ten kupon już kiedyś poszedł (zero powtórzeń na kanale!)
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is None:
             now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
@@ -219,7 +220,7 @@ def run_analysis_cycle(reason="Cykl Force Drop"):
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 (FORCE DROP) 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (DYNAMIC MASTER) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -237,10 +238,10 @@ def run_analysis_cycle(reason="Cykl Force Drop"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie Force Drop...")
+        print("[SYSTEM PITOS] Start w trybie Dynamic Day/Night...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start natychmiastowy")
+            run_analysis_cycle(reason="Wymuszony start dynamiczny")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
