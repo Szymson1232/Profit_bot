@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v4 — Multi-sport selector with randomized candidate shuffling & anti-repetition guards.
+# PITOS v4 — Multi-sport selector optimized for multi-coupon delivery & zero repetitions.
 # Required Railway Variables / Hardcoded Credentials Active:
 #   ODDS_API_KEY
 #   TELEGRAM_BOT_TOKEN
@@ -21,7 +21,7 @@ import requests
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# ------------------------- CONFIGURATION -------------------------
+# ------------------------- CONFIGURATION (ZOPTYMALIZOWANE) -------------------------
 
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
@@ -38,12 +38,15 @@ MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "1.75"))
 MIN_AKO_TOTAL = float(os.getenv("MIN_AKO_TOTAL", "2.00"))
 MAX_AKO_TOTAL = float(os.getenv("MAX_AKO_TOTAL", "3.20"))
 AKO_LEGS = int(os.getenv("AKO_LEGS", "3"))
-MAX_AKOS_PER_CYCLE = int(os.getenv("MAX_AKOS_PER_CYCLE", "1"))
+
+# ZWIĘKSZONE: Wypuszcza 3 kupony na cykl zamiast 1, żebyś miał konkretny wybór
+MAX_AKOS_PER_CYCLE = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 
 LOOKAHEAD_HOURS = int(os.getenv("LOOKAHEAD_HOURS", "24"))
 PAST_GRACE_MINUTES = int(os.getenv("PAST_GRACE_MINUTES", "0"))
 
-MIN_MARKET_PROBABILITY = float(os.getenv("MIN_MARKET_PROBABILITY", "0.62"))
+# LEKKO ROZLUŹNIONE: Więcej kandydatów z różnych dyscyplin (piłka, kosz, hokej, tenis)
+MIN_MARKET_PROBABILITY = float(os.getenv("MIN_MARKET_PROBABILITY", "0.58"))
 
 SPORT_ALLOWLIST = {
     item.strip() for item in os.getenv("SPORT_ALLOWLIST", "soccer,basketball,icehockey,tennis,eports,americanfootball,baseball").split(",")
@@ -352,7 +355,7 @@ def extract_candidate(event, sport_key):
     return max(choices, key=lambda item: item["market_probability"])
 
 
-# ------------------------- COUPON SELECTION -------------------------
+# ------------------------- COUPON SELECTION (LOSOWANIE ŚWIEŻYCH AKO) -------------------------
 
 def build_candidates(candidates):
     ranked = sorted(
@@ -361,6 +364,7 @@ def build_candidates(candidates):
         reverse=True,
     )
     
+    # Losowanie w puli uniemożliwia generowanie identycznych kombinacji
     random.shuffle(ranked)
 
     valid = []
@@ -525,7 +529,7 @@ def run_cycle(reason="scheduled"):
     used_this_cycle = set()
     sent_count = 0
 
-    for coupon in possible_coupons:
+    for coupon in possible_spec := possible_coupons:
         if sent_count >= MAX_AKOS_PER_CYCLE:
             break
 
