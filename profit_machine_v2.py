@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v4 — Multi-sport selector with strict signature deduplication & dynamic stakes.
+# PITOS v4 — Multi-sport selector with strict H2H filtering, 422 avoidance & dynamic stakes.
 # Required Railway Variables / Hardcoded Credentials Active:
 #   ODDS_API_KEY
 #   TELEGRAM_BOT_TOKEN
@@ -44,7 +44,6 @@ PAST_GRACE_MINUTES = int(os.getenv("PAST_GRACE_MINUTES", "0"))
 
 MIN_MARKET_PROBABILITY = float(os.getenv("MIN_MARKET_PROBABILITY", "0.62"))
 
-# SZEROKA LISTA DYSCYPLIN (Piłka nożna, kosz, hokej, tenis, esport, futbol amerykanski, baseball)
 SPORT_ALLOWLIST = {
     item.strip() for item in os.getenv("SPORT_ALLOWLIST", "soccer,basketball,icehockey,tennis,eports,americanfootball,baseball").split(",")
     if item.strip()
@@ -145,7 +144,6 @@ def init_db():
 
 
 def event_already_used(event_id):
-    """Checks if specific event was already used in any historical coupon."""
     with db_session() as conn:
         row = conn.execute(
             "SELECT 1 FROM sent_events WHERE event_id = ? LIMIT 1",
@@ -156,7 +154,6 @@ def event_already_used(event_id):
 
 
 def coupon_signature_exists(signature):
-    """Checks if exact same coupon combo signature was already published."""
     with db_session() as conn:
         row = conn.execute(
             "SELECT 1 FROM coupons WHERE signature = ? LIMIT 1",
@@ -298,18 +295,10 @@ def get_active_sports():
         if not sport.get("active", True):
             continue
         key = sport.get("key", "")
-        # Filtracja po grupie sportów (np. soccer_, basketball_ itp. pasujące do allowlist)
+        
+        # Odrzucamy rynki długoterminowe / outrights / winner powodujące błędy 422
+        if any(bad in key for bad in ["winner", "futures", "outrights", "championship"]):
+            continue
+
         matched = any(allowed in key for allowed in SPORT_ALLOWLIST)
         if SPORT_ALLOWLIST and matched:
-            active.append(sport)
-
-    if not active:
-        # Fallback jesli allowlist zwroci pustke
-        active = [s for s in sports if s.get("active", True)]
-
-    return active[:MAX_SPORTS_PER_CYCLE]
-
-
-def fetch_sport_events(sport_key):
-    return api_get(
-        f"/sports/{sport_key}/odds/",
