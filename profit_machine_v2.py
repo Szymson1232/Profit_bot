@@ -260,45 +260,4 @@ def verify_environment():
         log.error("Invalid single odds limits")
         return False
 
-    if MIN_AKO_TOTAL <= 1 or MAX_AKO_TOTAL < MIN_AKO_TOTAL:
-        log.error("Invalid AKO total odds limits")
-        return False
-
-    return True
-
-
-# ------------------------- DATA NORMALIZATION -------------------------
-
-def parse_time(value):
-    if not value:
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        )
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-
-        return parsed.astimezone(timezone.utc)
-
-    except (TypeError, ValueError):
-        return None
-
-
-def get_active_sports():
-    sports = api_get("/sports/", {})
-
-    active = []
-    for sport in sports:
-        if not sport.get("active", True):
-            continue
-        key = sport.get("key", "")
-        
-        # Odrzucamy rynki długoterminowe / outrights / winner powodujące błędy 422
-        if any(bad in key for bad in ["winner", "futures", "outrights", "championship"]):
-            continue
-
-        matched = any(allowed in key for allowed in SPORT_ALLOWLIST)
-        if SPORT_ALLOWLIST and matched:
+    if MIN_AKO
