@@ -10,28 +10,12 @@ API_KEY = os.getenv("ODDS_API_KEY", "d578396f7740845e63b7cc3f648b7486")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-SPORTS_TO_CHECK = [
-    "soccer_epl",                  
-    "soccer_spain_la_liga",        
-    "soccer_germany_bundesliga",    
-    "soccer_italy_serie_a",        
-    "soccer_france_ligue_one",     
-    "basketball_euroleague",
-    "soccer_netherlands_eredivisie",
-    "soccer_poland_ekstraklasa",
-    "basketball_nba",
-    "icehockey_nhl",
-    "americanfootball_nfl",
-    "baseball_mlb"
-]
-
 # Parametry AKO3 pod Betclic Bez Podatku
 MIN_ODDS_SINGLE = 1.08
 MAX_ODDS_SINGLE = 1.70
 MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.90
 MAX_AKO_EVENTS = 3
-
 MAX_AKO_PER_CYCLE = 2
 
 def verify_environment():
@@ -39,7 +23,7 @@ def verify_environment():
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Strict Time Guard Mode). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Iron Time Guard Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -79,6 +63,37 @@ def send_telegram_message(text):
             print(f"[TELEGRAM ERROR {response.status_code}] {response.text}")
     except Exception as e:
         print(f"[TELEGRAM EXCEPTION] {e}")
+
+def get_active_sports_for_current_time():
+    """ŻELAZNY SELEKTOR: W dzień blokuje Amerykę, w nocy ją odblokowuje."""
+    now_utc = datetime.now(timezone.utc)
+    local_hour = (now_utc.hour + 1) % 24  # Czas polski CET/CEST (uproszczona konwersja strefy)
+    
+    european_sports = [
+        "soccer_epl",                  
+        "soccer_spain_la_liga",        
+        "soccer_germany_bundesliga",    
+        "soccer_italy_serie_a",        
+        "soccer_france_ligue_one",     
+        "basketball_euroleague",
+        "soccer_netherlands_eredivisie",
+        "soccer_poland_ekstraklasa"
+    ]
+    
+    american_sports = [
+        "basketball_nba",
+        "icehockey_nhl",
+        "americanfootball_nfl",
+        "baseball_mlb"
+    ]
+    
+    # Jeśli jest dzień (między 06:00 a 20:00 czasu polskiego), gramy TYLKO Europe/dzienne!
+    if 6 <= local_hour < 20:
+        print(f"[TIME GUARD] Godzina {local_hour}:00 PL -> Tryb DZIENNY (brak sportów USA).")
+        return european_sports
+    else:
+        print(f"[TIME GUARD] Godzina {local_hour}:00 PL -> Tryb NOCNY (pełny arsenał USA + Europa).")
+        return european_sports + american_sports
 
 def fetch_odds_for_sport(sport):
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
@@ -120,14 +135,8 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    # Okno operacyjne na najbliższe 24 godziny
     min_allowed_date = now - timedelta(hours=1)
     max_allowed_date = now + timedelta(hours=24)
-    
-    is_american_sport = sport_name in ["basketball_nba", "icehockey_nhl", "americanfootball_nfl", "baseball_mlb"]
-    
-    # Aktualna godzina w Polsce (UTC + 1 / CET)
-    local_hour = (now.hour + 1) % 24
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -139,13 +148,6 @@ def extract_favorites(events, sport_name):
             
             if event_time < min_allowed_date or event_time > max_allowed_date:
                 continue
-            
-            event_local_hour = (event_time.hour + 1) % 24
-            
-            # ŻELAZNA ZASADA CZASOWA: Jeśli to sport amerykański, a jest dzień (08:00 - 20:00 PL), ODRZUCAMY GO CAŁKOWICIE
-            if is_american_sport and (8 <= local_hour < 20):
-                if not (22 <= event_local_hour or event_local_hour < 6):
-                    continue
             
         home_team = event.get('home_team', '')
         away_team = event.get('away_team', '')
@@ -176,11 +178,13 @@ def extract_favorites(events, sport_name):
             break
     return favorites
 
-def run_analysis_cycle(reason="Cykl Time-Guard"):
+def run_analysis_cycle(reason="Cykl Iron-Guard"):
     print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
+    active_sports = get_active_sports_for_current_time()
+    
     all_favorites = []
-    for sport in SPORTS_TO_CHECK:
+    for sport in active_sports:
         events = fetch_odds_for_sport(sport)
         favs = extract_favorites(events, sport)
         all_favorites.extend(favs)
@@ -224,12 +228,10 @@ def run_analysis_cycle(reason="Cykl Time-Guard"):
         if any(m in global_used_matches for m in cand['matches']):
             continue
             
-        # Sprawdzenie globalnego unikalnego podpisu kuponu
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is not None:
             continue
             
-        # Sprawdzenie czy którykolwiek mecz z kuponu nie był już grany w ciągu ostatnich 24h
         match_already_sent = False
         for m in cand['matches']:
             cursor.execute("SELECT id FROM sent_matches WHERE match_name = ?", (m,))
@@ -240,7 +242,6 @@ def run_analysis_cycle(reason="Cykl Time-Guard"):
         if match_already_sent:
             continue
             
-        # Zapisz kupon i mecze do bazy
         now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
         for m in cand['matches']:
@@ -250,7 +251,7 @@ def run_analysis_cycle(reason="Cykl Time-Guard"):
             
         stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
         
-        msg = f"<b>💸 CASH MACHINE AKO3 (STRICT MODE) 💸</b>\n\n"
+        msg = f"<b>💸 CASH MACHINE AKO3 (IRON GUARD) 💸</b>\n\n"
         for idx, item in enumerate(cand['combo'], 1):
             msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
         
@@ -268,10 +269,10 @@ def run_analysis_cycle(reason="Cykl Time-Guard"):
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Start w trybie Strict Time Guard...")
+        print("[SYSTEM PITOS] Start w trybie Iron Time Guard...")
         
         try:
-            run_analysis_cycle(reason="Wymuszony start Strict")
+            run_analysis_cycle(reason="Wymuszony start Iron")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
