@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.22 — Unrestricted multi-sport night engine with cleared team filters.
+# PITOS v5.24 — Full-arsenal elite betting engine with all leagues restored.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.22 Active")
+        self.wfile.write(b"PITOS v5.24 Active")
     def log_message(self, format, *args):
         pass
 
@@ -43,13 +43,13 @@ t_http.start()
 
 
 # ================= CONFIGURATION =================
-API_KEY = os.getenv("ODDS_API_KEY", "da5d00ec5b19387fce759db159812aef").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
-MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "35"))  # Szersza pula dyscyplin
+MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "45"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.20"))
@@ -58,8 +58,8 @@ MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.15"))  # Bardzo luźne sito, żeby na pewno coś wpadło
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "20"))  # Szerokie okno nocy i poranka
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.15"))
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "24"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -69,7 +69,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.22")
+log = logging.getLogger("pitos-v5.24")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -114,7 +114,7 @@ def init_db():
             )
         """)
             
-    print("-> PITOS v5.22 DB freshly initialized. Filters cleared.", flush=True)
+    print("-> PITOS v5.24 DB freshly initialized. Full arsenal unlocked.", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -173,11 +173,9 @@ def get_sports():
         if not s.get("active", True):
             continue
         key = s.get("key", "").lower()
-        # Wykluczamy tylko NBA, NFL i hokej z żądania użytkownika
+        # Wykluczamy tylko rynki długoterminowe (outrights/futures) – wszystko inne (hokej, NCAA, tenis, piłka) wraca do gry!
         banned_keywords = [
-            "winner", "futures", "outrights", "championship", 
-            "nba", "basketball_nba", "americanfootball", "gridiron",
-            "icehockey", "nhl"
+            "winner", "futures", "outrights", "championship"
         ]
         if any(b in key for b in banned_keywords):
             continue
@@ -255,9 +253,9 @@ def extract_candidates(sport_key):
 
 
 def run_cycle():
-    print("-> PITOS v5.22 unrestricted scan started...", flush=True)
+    print("-> PITOS v5.24 elite full-arsenal scan started...", flush=True)
     sports = get_sports()
-    print(f"-> Active sports pooled: {len(sports)}", flush=True)
+    print(f"-> Active elite sports pooled: {len(sports)}", flush=True)
 
     all_candidates = []
     for sp in sports:
@@ -265,10 +263,10 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in all_candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates found: {len(candidates)}", flush=True)
+    print(f"-> Total unique elite candidates found: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in current window.", flush=True)
+        print("-> No candidates found in current elite window.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -286,7 +284,7 @@ def run_cycle():
                     "total_odds": c["odds"],
                     "signature": sig,
                     "event_ids": [c["event_id"]],
-                    "type": "SINGIEL NOCNY"
+                    "type": "SINGIEL ELITE"
                 })
 
     for r in [2, 3]:
@@ -308,11 +306,11 @@ def run_cycle():
                     "total_odds": total_odds,
                     "signature": sig,
                     "event_ids": e_ids,
-                    "type": f"AKO{r} NOCNY"
+                    "type": f"AKO{r} ELITE"
                 })
 
     random.shuffle(valid_coupons)
-    print(f"-> Valid coupons generated: {len(valid_coupons)}", flush=True)
+    print(f"-> Valid elite coupons generated: {len(valid_coupons)}", flush=True)
 
     sent = 0
     used_in_cycle = set()
@@ -320,86 +318,4 @@ def run_cycle():
     for coupon in valid_coupons:
         if sent >= MAX_COUPONS:
             break
-        if any(eid in used_in_cycle for eid in coupon["event_ids"]):
-            continue
-
-        tot = coupon["total_odds"]
-        c_type = coupon["type"]
-        stake_u = 3 if tot <= 2.50 else (2 if tot <= 3.20 else 1)
-        stake_pln = stake_u * 25
-
-        lines = [f"<b>🥷 PITOS v5.22 | {c_type} #{sent+1}</b>", ""]
-        for idx, item in enumerate(coupon["combo"], 1):
-            ev_esc = html.escape(item["event"])
-            sel_esc = html.escape(item["selection"])
-            sp_esc = html.escape(item["sport"])
-            kick = item["commence"].strftime("%d.%m %H:%M UTC")
-            lines.append(f"{idx}. <b>{ev_esc}</b>\n   Typ: <i>{sel_esc}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {sp_esc} | {kick}")
-
-        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {stake_u}j ({stake_pln} zł)</b>"])
-        msg = "\n".join(lines)
-        c_id = coupon["signature"][:24]
-
-        try:
-            with get_db() as conn:
-                now_str = datetime.now(timezone.utc).isoformat()
-                conn.execute(
-                    "INSERT OR IGNORE INTO coupons (coupon_id, signature, message, status, created_at) VALUES (?, ?, ?, 'sent', ?)",
-                    (c_id, coupon["signature"], msg, now_str)
-                )
-                for item in coupon["combo"]:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO sent_events (event_id, sport_key, event_name, coupon_id, status, created_at) VALUES (?, ?, ?, ?, 'sent', ?)",
-                        (item["event_id"], item["sport"], item["event"], c_id, now_str)
-                    )
-
-            telegram_send(msg)
-            MEM_SIGNATURES.add(coupon["signature"])
-            for eid in coupon["event_ids"]:
-                MEM_EVENTS.add(eid)
-
-            used_in_cycle.update(coupon["event_ids"])
-            sent += 1
-            print(f"-> Published {c_type} coupon {c_id} successfully!", flush=True)
-        except Exception as e:
-            print(f"-> Failed to save/send coupon {c_id}: {e}", flush=True)
-
-    print(f"-> Scan cycle finished. Sent {sent} coupons.", flush=True)
-
-
-def background_worker():
-    init_db()
-    print("-> Background worker started. Triggering initial scan...", flush=True)
-    try:
-        run_cycle()
-    except Exception as e:
-        print(f"-> Initial scan crashed: {e}", flush=True)
-
-    while True:
-        start = time.monotonic()
-        try:
-            run_cycle()
-        except Exception as e:
-            print(f"-> Cycle crashed with error: {e}", flush=True)
-
-        elapsed = time.monotonic() - start
-        sleep_time = max(30, SCAN_INTERVAL - int(elapsed))
-        print(f"-> Sleeping for {sleep_time} seconds...", flush=True)
-        time.sleep(sleep_time)
-
-
-# ================= MAIN =================
-def main():
-    print("-> PITOS v5.22 starting up...", flush=True)
-    if not API_KEY or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("-> CRITICAL: Missing environment variables!", flush=True)
-        sys.exit(1)
-
-    t_worker = threading.Thread(target=background_worker, daemon=True)
-    t_worker.start()
-
-    while True:
-        time.sleep(3600)
-
-if __name__ == "__main__":
-    main()
+        if any(eid in used_in_cycle for eid
