@@ -10,7 +10,7 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Pełna baza dyscyplin pod maksymalny zysk (wraz z NFL, piłką i koszem)
+# Pełna baza dyscyplin pod maksymalny zysk (NFL, piłka, kosz, hokej i inne)
 SPORTS_TO_CHECK = [
     "americanfootball_nfl",        
     "soccer_epl",                  
@@ -32,7 +32,7 @@ MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.70
 MAX_AKO_EVENTS = 3      # Zawsze precyzyjne AKO3
 
-# Wysoki limit dropów na cykl – maszyna ma wypluwać tyle, ile znajdzie perełek!
+# Wysoki limit dropów na cykl – maszyna wypluwa tyle perełek, ile znajdzie!
 MAX_AKO_PER_CYCLE = 15
 
 def verify_environment():
@@ -167,11 +167,10 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
     
     candidates_to_send = []
     
-    # Rygorystycznie szukamy idealnych AKO3 (r = 3)
     for combo in combinations(all_favorites, MAX_AKO_EVENTS):
         matches = [item['match'] for item in combo]
         
-        # 100% unikalności: żadne wydarzenie nie może się powtórzyć na tym samym kuponie
+        # Unikalność w obrębie pojedynczej kombinacji
         if len(set(matches)) != len(matches):
             continue
             
@@ -194,27 +193,26 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
     conn = sqlite3.connect("monsters_bets.db")
     cursor = conn.cursor()
     
-    # Żelazna zasada w cyklu: 1 wydarzenie może być użyte TYLKO na jednym kuponie!
-    used_matches_in_this_run = set()
+    # 🔒 ŻELAZNA TARCZA: Żaden mecz nie powtórzy się na dwóch różnych kuponach w tym samym rzucie[span_1](start_span)[span_1](end_span)
+    global_used_matches = set()
     
     for cand in candidates_to_send:
         if generated_akos >= MAX_AKO_PER_CYCLE:
             break
             
-        # Sprawdzamy czy którekolwiek zdarzenie z taśmy było już użyte w tym rzucie
-        if any(m in used_matches_in_this_run for m in cand['matches']):
+        # Odrzucamy kupon, jeśli choć jeden mecz był już użyty na wcześniejszej taśmie w tym cyklu[span_2](start_span)[span_2](end_span)
+        if any(m in global_used_matches for m in cand['matches']):
             continue
             
-        # Sprawdzamy w bazie historycznej, czy ta taśma już kiedyś leciała
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is None:
             now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
             conn.commit()
             
-            # Blokujemy te mecze do końca tego cyklu
+            # Blokujemy te mecze do końca cyklu
             for m in cand['matches']:
-                used_matches_in_this_run.add(m)
+                global_used_matches.add(m)
                 
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
@@ -231,20 +229,20 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
             generated_akos += 1
             
     conn.close()
-    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych kuponów AKO3.")
+    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} w 100% unikalnych kuponów AKO3.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
         print("[SYSTEM PITOS] Maszyna uruchomiona. Robię natychmiastowy skan startowy, a potem lecimy cyklicznie co 3 godziny...")
         
-        # Pierwszy zrzut od razu po starcie
+        # Natychmiastowy zrzut po starcie
         try:
             run_analysis_cycle(reason="Start Maszyny Pitosu")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
-        # Pętla ciągła: sprawdza upływ czasu i odpala się co dokładnie 3 godziny (10800 sekund)
+        # Ciągła pętla interwałowa co 3 godziny (10800 sekund)
         last_run_timestamp = time.time()
         THREE_HOURS_IN_SECONDS = 3 * 3600
         
