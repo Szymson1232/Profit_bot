@@ -10,7 +10,7 @@ API_KEY = os.getenv("ODDS_API_KEY", "d97af8a243c0f210867f0e7f905a9014")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7221307802")
 
-# Pełna baza dyscyplin pod maksymalny zysk
+# Pełna baza dyscyplin
 SPORTS_TO_CHECK = [
     "americanfootball_nfl",        
     "soccer_epl",                  
@@ -25,22 +25,21 @@ SPORTS_TO_CHECK = [
     "baseball_mlb"                 
 ]
 
-# Agresywne parametry pod AKO3 (wysokie prawdopodobieństwo + Betclic Bez Podatku)
+# Parametry AKO3 pod Betclic Bez Podatku
 MIN_ODDS_SINGLE = 1.08
 MAX_ODDS_SINGLE = 1.60
 MIN_AKO_TOTAL = 1.95
 MAX_AKO_TOTAL = 2.70
-MAX_AKO_EVENTS = 3      # Zawsze precyzyjne AKO3
+MAX_AKO_EVENTS = 3
 
-# Wysoki limit dropów na cykl
-MAX_AKO_PER_CYCLE = 15
+MAX_AKO_PER_CYCLE = 10
 
 def verify_environment():
     if not API_KEY:
         print("[CRITICAL ERROR] Brak klucza API!")
         return False
     masked = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***"
-    print(f"[SYSTEM PITOS OK] Maszyna AKO3 wystartował (Tryb dzienne value). API Key: {masked}")
+    print(f"[SYSTEM PITOS OK] Maszyna AKO3 (Hardcore Unique Mode). API Key: {masked}")
     return True
 
 def init_db():
@@ -50,6 +49,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS sent_akos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ako_signature TEXT UNIQUE,
+            timestamp TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS used_teams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_name TEXT UNIQUE,
             timestamp TEXT
         )
     """)
@@ -68,7 +74,7 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("[TELEGRAM] Kupon wysłany na kanał.")
+            print("[TELEGRAM] Kupon wysłany pomyślnie.")
         else:
             print(f"[TELEGRAM ERROR {response.status_code}] {response.text}")
     except Exception as e:
@@ -114,9 +120,9 @@ def extract_favorites(events, sport_name):
     seen_matches = set()
     now = datetime.now(timezone.utc)
     
-    # KRYTYCZNA ZMIANA: Okno operacyjne ustawiamy na nadchodzące 24 godziny (żadnych odległych nocy czy przeszłości)
-    min_allowed_date = now                  # Od teraz
-    max_allowed_date = now + timedelta(hours=24) # Maksymalnie za dobę
+    # Restrykcyjne okno: tylko mecze zaczynające się w ciągu najbliższych 18 godzin (żadnych starych śmieci)
+    min_allowed_date = now
+    max_allowed_date = now + timedelta(hours=18)
     
     for event in events:
         commence_time_str = event.get('commence_time', '')
@@ -126,13 +132,12 @@ def extract_favorites(events, sport_name):
             if event_time.tzinfo is None:
                 event_time = event_time.replace(tzinfo=timezone.utc)
             
-            # Odrzucamy mecze, które już się zaczęły lub są zaplanowane dopiero za ponad 24 godziny
             if event_time < min_allowed_date or event_time > max_allowed_date:
                 continue
             
         home_team = event.get('home_team')
         away_team = event.get('away_team')
-        match_key = f"{home_team}_{away_team}"
+        match_key = f"{home_team} vs {away_team}"
         
         if match_key in seen_matches:
             continue
@@ -148,7 +153,7 @@ def extract_favorites(events, sport_name):
                         
                         if MIN_ODDS_SINGLE <= price <= MAX_ODDS_SINGLE:
                             favorites.append({
-                                'match': f"{home_team} vs {away_team}",
+                                'match': match_key,
                                 'selection': name,
                                 'odds': price,
                                 'sport': sport_name,
@@ -160,15 +165,29 @@ def extract_favorites(events, sport_name):
 
 def run_analysis_cycle(reason="Cykl 3-godzinny"):
     print(f"\n[PITOS CYCLE] Start skanowania ({reason}): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    all_favorites = []
     
+    conn = sqlite3.connect("monsters_bets.db")
+    cursor = conn.cursor()
+    
+    # Czyszczenie z pamięci trwałych blokad starszych niż 24h, żeby pula się odświeżała
+    cursor.execute("DELETE FROM used_teams WHERE datetime(timestamp) < datetime('now', '-24 hours')")
+    conn.commit()
+    
+    # Pobieramy mecze, które były już użyte w ostatnich godzinach
+    cursor.execute("SELECT match_name FROM used_teams")
+    recently_used_matches = {row[0] for row in cursor.fetchall()}
+    
+    all_favorites = []
     for sport in SPORTS_TO_CHECK:
         events = fetch_odds_for_sport(sport)
         favs = extract_favorites(events, sport)
-        all_favorites.extend(favs)
+        
+        # Odrzucamy w ogóle mecze, które już wcześniej postawiliśmy w bazie
+        fresh_favs = [f for f in favs if f['match'] not in recently_used_matches]
+        all_favorites.extend(fresh_favs)
         time.sleep(1)
         
-    print(f"[ANALIZA] Wyłapano łącznie {len(all_favorites)} aktualnych zdarzeń (najbliższe 24h).")
+    print(f"[ANALIZA] Świeże, niewykorzystane zdarzenia: {len(all_favorites)}")
     
     candidates_to_send = []
     
@@ -194,30 +213,36 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
     candidates_to_send.sort(key=lambda x: x['total_odds'], reverse=True)
     
     generated_akos = 0
-    conn = sqlite3.connect("monsters_bets.db")
-    cursor = conn.cursor()
-    
-    global_used_matches = set()
+    cycle_used_matches = set()
     
     for cand in candidates_to_send:
         if generated_akos >= MAX_AKO_PER_CYCLE:
             break
             
-        if any(m in global_used_matches for m in cand['matches']):
+        if any(m in cycle_used_matches for m in cand['matches']):
             continue
             
+        # Sprawdzamy czy dokładna taśma nie była wysłana
         cursor.execute("SELECT id FROM sent_akos WHERE ako_signature = ?", (cand['signature'],))
         if cursor.fetchone() is None:
             now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Zapisujemy taśmę jako wysłaną
             cursor.execute("INSERT INTO sent_akos (ako_signature, timestamp) VALUES (?, ?)", (cand['signature'], now_str))
+            
+            # Blokujemy każdy mecz w bazie na 24h, żeby algorytm nigdy więcej go nie wziął
+            for m in cand['matches']:
+                cycle_used_matches.add(m)
+                try:
+                    cursor.execute("INSERT INTO used_teams (match_name, timestamp) VALUES (?, ?)", (m, now_str))
+                except sqlite3.IntegrityError:
+                    pass
+                    
             conn.commit()
             
-            for m in cand['matches']:
-                global_used_matches.add(m)
-                
             stake, confidence = calculate_stake_and_confidence(cand['combo'], cand['total_odds'])
             
-            msg = f"<b>💸 CASH MACHINE AKO3 💸</b>\n\n"
+            msg = f"<b>💸 CASH MACHINE AKO3 (ŚWIEŻE VALUE) 💸</b>\n\n"
             for idx, item in enumerate(cand['combo'], 1):
                 msg += f"{idx}. <b>{item['match']}</b>\n   Typ: <i>{item['selection']}</i> (Kurs: <b>{item['odds']}</b>)\n"
             
@@ -230,15 +255,15 @@ def run_analysis_cycle(reason="Cykl 3-godzinny"):
             generated_akos += 1
             
     conn.close()
-    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych kuponów AKO3.")
+    print(f"[PITOS CYCLE] Wypuszczono na kanał: {generated_akos} unikalnych, świeżych kuponów AKO3.")
 
 if __name__ == "__main__":
     if verify_environment():
         init_db()
-        print("[SYSTEM PITOS] Maszyna uruchomiona z filtrem 24h. Robię natychmiastowy skan...")
+        print("[SYSTEM PITOS] Start w trybie twardej unikalności...")
         
         try:
-            run_analysis_cycle(reason="Start Maszyny Pitosu (Dzienne Value)")
+            run_analysis_cycle(reason="Start - Czyszczenie i świeże value")
         except Exception as e:
             print(f"[ERROR START] {e}")
             
