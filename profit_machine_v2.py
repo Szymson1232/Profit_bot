@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.50 — Dynamic unit staking (1j = 25 PLN, range 1j-3j).
+# PITOS v5.51 — Optimized scan interval (2 hours) to conserve API credits.
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.50 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.51 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -43,12 +43,13 @@ def instant_bind():
 threading.Thread(target=instant_bind, daemon=True).start()
 
 # ================= CONFIG =================
-API_KEY = os.getenv("ODDS_API_KEY", "1f1fc0e8220d689df6cb59c21cc04e8b").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
+# ZMIANA: Skan co 2 godziny (7200 sekund) oszczędza darmowe kredyty API
+SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.18"))
 MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.00"))
@@ -84,7 +85,7 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print("-> Purged old DB for dynamic staking.", flush=True)
+            print("-> Purged old DB for 2h interval version.", flush=True)
         except Exception:
             pass
     with get_db() as conn:
@@ -107,7 +108,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v5.50 DB ready.", flush=True)
+    print("-> PITOS v5.51 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -137,16 +138,15 @@ def parse_time(val):
         return None
 
 def get_dynamic_stake(total_odds, combo_len):
-    # Dynamiczne stawkowanie od 1j do 3j w zależności od kursu i liczby zdarzeń
     if total_odds < 2.20 and combo_len == 2:
-        return 3, 3 * UNIT_PLN  # 3j (75 zł) na bezpieczniejsze AKO2
+        return 3, 3 * UNIT_PLN  # 3j (75 zł)
     elif total_odds > 3.00:
-        return 1, 1 * UNIT_PLN  # 1j (25 zł) na wyższy kurs / ryzyko
+        return 1, 1 * UNIT_PLN  # 1j (25 zł)
     else:
-        return 2, 2 * UNIT_PLN  # 2j (50 zł) standard
+        return 2, 2 * UNIT_PLN  # 2j (50 zł)
 
 def run_cycle():
-    print("-> Starting dynamic staking day scan (v5.50)...", flush=True)
+    print("-> Starting 2h-interval day scan cycle (v5.51)...", flush=True)
     sports_data = api_get("/sports/")
     if not sports_data:
         print("-> Failed to fetch sports list.", flush=True)
@@ -235,7 +235,7 @@ def run_cycle():
                     continue
                 valid_coupons.append({
                     "combo": combo, "total_odds": total_odds, "signature": sig,
-                    "event_ids": e_ids, "type": f"AKO{r} DYNAMIC"
+                    "event_ids": e_ids, "type": f"AKO{r} 2H-OPTIMIZED"
                 })
 
     random.shuffle(valid_coupons)
@@ -252,7 +252,7 @@ def run_cycle():
         combo_len = len(coupon["combo"])
         units, stake_pln = get_dynamic_stake(tot, combo_len)
 
-        lines = [f"<b>🥷 PITOS v5.50 | {coupon['type']} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.51 | {coupon['type']} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
@@ -274,14 +274,14 @@ def run_cycle():
             MEM_SIGNATURES.add(coupon["signature"])
             used_in_cycle.update(coupon["event_ids"])
             sent += 1
-            print(f"-> Sent dynamic coupon {c_id} with {units}j", flush=True)
+            print(f"-> Sent optimized coupon {c_id} with {units}j", flush=True)
         except Exception as e:
             print(f"-> Send error: {e}", flush=True)
 
     print(f"-> Cycle done. Sent: {sent}", flush=True)
 
 def main():
-    print("-> PITOS v5.50 starting...", flush=True)
+    print("-> PITOS v5.51 starting...", flush=True)
     init_db()
     
     while True:
@@ -289,8 +289,9 @@ def main():
             run_cycle()
         except Exception as e:
             print(f"-> Cycle error: {e}", flush=True)
-        print(f"-> Sleeping for {SCAN_INTERVAL} seconds...", flush=True)
+        print(f"-> Sleeping for {SCAN_INTERVAL} seconds (2 hours)...", flush=True)
         time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
     main()
+ LP
