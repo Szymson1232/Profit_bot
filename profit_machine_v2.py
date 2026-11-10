@@ -1,37 +1,10 @@
 #!/usr/bin/env python3
-# PITOS v5.39 — Fixed f-string closure in Telegram message formatter.
+# PITOS v5.40 — Final event loop optimization for Railway log flushing.
 
 import os
 import sys
 import socket
 import threading
-
-PORT = int(os.getenv("PORT", "8080"))
-
-# ================= NATYCHMIASTOWY BIND PORTU DLA RAILWAY =================
-def instant_bind():
-    try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind(("0.0.0.0", PORT))
-        server.listen(5)
-        print(f"-> Railway health port {PORT} bound instantly.", flush=True)
-        while True:
-            conn, _ = server.accept()
-            try:
-                conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.39 Active"
-                conn.sendall(response)
-            except Exception:
-                pass
-            finally:
-                conn.close()
-    except Exception as e:
-        print(f"-> Bind error: {e}", flush=True)
-
-threading.Thread(target=instant_bind, daemon=True).start()
-
-# ================= RESZTA PAKIETÓW I LOGIKA =================
 import time
 import math
 import sqlite3
@@ -44,7 +17,32 @@ from itertools import combinations
 import requests
 
 os.environ["PYTHONUNBUFFERED"] = "1"
+PORT = int(os.getenv("PORT", "8080"))
 
+# ================= NATYCHMIASTOWY BIND PORTU =================
+def instant_bind():
+    try:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", PORT))
+        server.listen(5)
+        print(f"-> Railway health port {PORT} bound instantly.", flush=True)
+        while True:
+            conn, _ = server.accept()
+            try:
+                conn.recv(512)
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.40 Active"
+                conn.sendall(response)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+    except Exception as e:
+        print(f"-> Bind error: {e}", flush=True)
+
+threading.Thread(target=instant_bind, daemon=True).start()
+
+# ================= CONFIG =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
@@ -71,10 +69,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.39")
 session = requests.Session()
 
-MEM_EVENTS = set()
 MEM_SIGNATURES = set()
 
 def get_db():
@@ -89,35 +85,15 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print(f"-> Purged old database file {SQLITE_PATH}.", flush=True)
+            print("-> Purged old DB.", flush=True)
         except Exception:
             pass
-
     with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sent_events (
-                event_id TEXT PRIMARY KEY,
-                sport_key TEXT NOT NULL,
-                event_name TEXT NOT NULL,
-                coupon_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS coupons (
-                coupon_id TEXT PRIMARY KEY,
-                signature TEXT NOT NULL UNIQUE,
-                message TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-        """)
-    print("-> PITOS v5.39 DB initialized.", flush=True)
+        conn.execute("CREATE TABLE IF NOT EXISTS sent_events (event_id TEXT PRIMARY KEY, sport_key TEXT, event_name TEXT, coupon_id TEXT, status TEXT, created_at TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS coupons (coupon_id TEXT PRIMARY KEY, signature TEXT UNIQUE, message TEXT, status TEXT, created_at TEXT)")
+    print("-> PITOS v5.40 DB ready.", flush=True)
 
 def api_get(path, params=None):
-    if not API_KEY:
-        raise RuntimeError("Missing ODDS_API_KEY")
     p = dict(params or {})
     p["apiKey"] = API_KEY
     time.sleep(0.3)
@@ -125,21 +101,14 @@ def api_get(path, params=None):
     if res.status_code == 429:
         time.sleep(10)
         res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
-    if res.status_code != 200:
-        res.raise_for_status()
+    res.raise_for_status()
     return res.json()
 
 def telegram_send(msg):
     url = f"{TELEGRAM_BASE}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True}
     res = session.post(url, json=payload, timeout=20)
-    data = res.json() if res.status_code == 200 else {}
-    if res.status_code != 200 or not data.get("ok"):
+    if res.status_code != 200 or not res.json().get("ok"):
         raise RuntimeError("Telegram failed")
 
 def parse_time(val):
@@ -147,56 +116,66 @@ def parse_time(val):
         return None
     try:
         dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
     except Exception:
         return None
 
-def get_sports():
-    sports = api_get("/sports/")
-    active = []
-    for s in sports:
-        if not s.get("active", True):
-            continue
-        key = s.get("key", "").lower()
-        if "outrights" in key or "futures" in key:
-            continue
-        active.append(key)
-    return active[:MAX_SPORTS]
-
-def extract_candidates(sport_key):
+def run_cycle():
+    print("-> Starting scan cycle...", flush=True)
     try:
-        events = api_get(f"/sports/{sport_key}/odds/", {"regions": "eu", "markets": "h2h", "oddsFormat": "decimal"})
-    except Exception:
-        return []
+        sports_data = api_get("/sports/")
+    except Exception as e:
+        print(f"-> Failed to fetch sports: {e}", flush=True)
+        return
+
+    sports = [s["key"].lower() for s in sports_data if s.get("active", True) and "outrights" not in s.get("key", "").lower()]
+    sports = sports[:MAX_SPORTS]
+    print(f"-> Active sports count: {len(sports)}", flush=True)
 
     candidates = []
     now = datetime.now(timezone.utc)
 
-    for ev in events:
-        ev_id = ev.get("id")
-        if not ev_id:
-            continue
-        commence = parse_time(ev.get("commence_time"))
-        if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
+    for sp in sports:
+        try:
+            events = api_get(f"/sports/{sp}/odds/", {"regions": "eu", "markets": "h2h", "oddsFormat": "decimal"})
+        except Exception:
             continue
 
-        home = ev.get("home_team", "Unknown")
-        away = ev.get("away_team", "Unknown")
+        for ev in events:
+            ev_id = ev.get("id")
+            if not ev_id:
+                continue
+            commence = parse_time(ev.get("commence_time"))
+            if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
+                continue
 
-        bk = None
-        for b in ev.get("bookmakers", []):
-            title = (b.get("title") or "").strip().lower()
-            key = (b.get("key") or "").strip().lower()
-            if BOOKMAKER in title or BOOKMAKER in key:
-                bk = b
-                break
-        if not bk:
-            continue
+            home, away = ev.get("home_team", "Unknown"), ev.get("away_team", "Unknown")
+            bk = next((b for b in ev.get("bookmakers", []) if BOOKMAKER in (b.get("title") or "").lower() or BOOKMAKER in (b.get("key") or "").lower()), None)
+            if not bk:
+                continue
 
-        h2h = next((m for m in bk.get("markets", []) if m.get("key") == "h2h"), None)
-        if not h2h:
-            continue
+            h2h = next((m for m in bk.get("markets", []) if m.get("key") == "h2h"), None)
+            if not h2h:
+                continue
 
-        outcomes
+            prices = []
+            for o in h2h.get("outcomes", []):
+                try:
+                    pr = float(o.get("price"))
+                    if math.isfinite(pr) and pr > 1.0:
+                        prices.append((o.get("name", ""), pr))
+                except Exception:
+                    continue
+
+            if len(prices) < 2:
+                continue
+
+            p_sum = sum(1.0 / pr for _, pr in prices)
+            if p_sum <= 0:
+                continue
+
+            for name, pr in prices:
+                norm_p = (1.0 / pr) / p_sum
+                if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
+                    candidates.append({
+                        "event_id
