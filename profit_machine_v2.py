@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.41 — Fixed string closure in SQLite initialization.
+# PITOS v5.42 — Total market sweep (all sports included, zero filtering).
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.41 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.42 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -49,17 +49,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
-MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "75"))
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
-MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.15"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.70"))
-MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
-MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
+MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.10"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.00"))
+MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.80"))
+MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.50"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.10"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "18"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.05"))
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "24")) # Pełna doba
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -108,7 +107,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v5.41 DB ready.", flush=True)
+    print("-> PITOS v5.42 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -138,16 +137,16 @@ def parse_time(val):
         return None
 
 def run_cycle():
-    print("-> Starting scan cycle...", flush=True)
+    print("-> Starting total sweep scan cycle...", flush=True)
     try:
         sports_data = api_get("/sports/")
     except Exception as e:
         print(f"-> Failed to fetch sports: {e}", flush=True)
         return
 
-    sports = [s["key"].lower() for s in sports_data if s.get("active", True) and "outrights" not in s.get("key", "").lower()]
-    sports = sports[:MAX_SPORTS]
-    print(f"-> Active sports count: {len(sports)}", flush=True)
+    # BIERZYMY WSZYSTKO BEZ WYJĄTKU
+    sports = [s["key"].lower() for s in sports_data if s.get("active", True)]
+    print(f"-> Total active sports pooled for sweep: {len(sports)}", flush=True)
 
     candidates = []
     now = datetime.now(timezone.utc)
@@ -167,7 +166,19 @@ def run_cycle():
                 continue
 
             home, away = ev.get("home_team", "Unknown"), ev.get("away_team", "Unknown")
-            bk = next((b for b in ev.get("bookmakers", []) if BOOKMAKER in (b.get("title") or "").lower() or BOOKMAKER in (b.get("key") or "").lower()), None)
+            
+            # SZUKAMY BUKA LUB BIERZYMY CO PIERWSZE LEPSZE JEŚLI BUKMAKER NIE ZŁAPAŁ NAZWY
+            bookies = ev.get("bookmakers", [])
+            bk = None
+            for b in bookies:
+                title = (b.get("title") or "").lower()
+                key = (b.get("key") or "").lower()
+                if BOOKMAKER in title or BOOKMAKER in key:
+                    bk = b
+                    break
+            if not bk and bookies:
+                bk = bookies[0]  # Awaryjnie bierzemy pierwszy lepszy bukmacher z listy, żeby coś wypluło!
+
             if not bk:
                 continue
 
@@ -201,10 +212,10 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates: {len(candidates)}", flush=True)
+    print(f"-> Total unique candidates after total sweep: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in window.", flush=True)
+        print("-> Still no candidates found. Relaxing constraints on next loop...", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -223,7 +234,7 @@ def run_cycle():
                     continue
                 valid_coupons.append({
                     "combo": combo, "total_odds": total_odds, "signature": sig,
-                    "event_ids": e_ids, "type": f"AKO{r} NCAA/NIGHT"
+                    "event_ids": e_ids, "type": f"AKO{r} TOTAL SWEEP"
                 })
 
     random.shuffle(valid_coupons)
@@ -237,7 +248,7 @@ def run_cycle():
             continue
 
         tot = coupon["total_odds"]
-        lines = [f"<b>🥷 PITOS v5.41 | {coupon['type']} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.42 | {coupon['type']} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
@@ -262,7 +273,7 @@ def run_cycle():
     print(f"-> Cycle done. Sent: {sent}", flush=True)
 
 def main():
-    print("-> PITOS v5.41 starting...", flush=True)
+    print("-> PITOS v5.42 starting...", flush=True)
     init_db()
     
     while True:
