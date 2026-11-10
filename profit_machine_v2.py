@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.44 — Fixed API regions, live-window inclusion, and debug logging.
+# PITOS v5.46 — Night session target scan with 50 PLN (2j) stake configuration.
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.44 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.46 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -43,7 +43,7 @@ def instant_bind():
 threading.Thread(target=instant_bind, daemon=True).start()
 
 # ================= CONFIG =================
-API_KEY = os.getenv("ODDS_API_KEY", "f6f4cc2d64959dfc4f4af23e818e0035").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
@@ -55,9 +55,12 @@ MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.50"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.75"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.50"))
 
-MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
+MAX_COUPONS = 2  # Dokładnie 2 mocne picki na nockę
+STAKE_PLN = 50   # Zgodnie z życzeniem: 50 zł
+STAKE_UNITS = "2j"
+
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.01"))
-PAST_WINDOW_HOURS = 2   # Uwzględniamy mecze, które zaciekły do 2h temu (trwające)
+PAST_WINDOW_HOURS = 2
 FUTURE_WINDOW_HOURS = 24
 
 API_BASE = "https://api.the-odds-api.com/v4"
@@ -107,19 +110,24 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v5.44 DB ready.", flush=True)
+    print("-> PITOS v5.46 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
     p["apiKey"] = API_KEY
     time.sleep(0.3)
     res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
-    if res.status_code == 429:
+    
+    if res.status_code == 401:
+        print(f"-> CRITICAL: API Key out of credits or invalid!", flush=True)
+    elif res.status_code == 422:
+        return None
+    elif res.status_code == 429:
         time.sleep(10)
         res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
+        
     if res.status_code != 200:
-        print(f"-> API Error {res.status_code} on {path}: {res.text[:200]}", flush=True)
-    res.raise_for_status()
+        return None
     return res.json()
 
 def telegram_send(msg):
@@ -139,15 +147,17 @@ def parse_time(val):
         return None
 
 def run_cycle():
-    print("-> Starting full sweep scan cycle (v5.44)...", flush=True)
-    try:
-        sports_data = api_get("/sports/")
-    except Exception as e:
-        print(f"-> Failed to fetch sports: {e}", flush=True)
+    print("-> Starting night target scan cycle (v5.46)...", flush=True)
+    sports_data = api_get("/sports/")
+    if not sports_data:
+        print("-> Failed to fetch sports list.", flush=True)
         return
 
-    sports = [s["key"].lower() for s in sports_data if s.get("active", True)]
-    print(f"-> Total active sports pooled: {len(sports)}", flush=True)
+    sports = [
+        s["key"].lower() for s in sports_data 
+        if s.get("active", True) and "outrights" not in s["key"].lower() and "winner" not in s["key"].lower()
+    ]
+    print(f"-> Active sports pooled for night scan: {len(sports)}", flush=True)
 
     candidates = []
     now = datetime.now(timezone.utc)
@@ -155,12 +165,7 @@ def run_cycle():
     window_end = now + timedelta(hours=FUTURE_WINDOW_HOURS)
 
     for sp in sports:
-        try:
-            # PRZYWRACAMY REGIONY eu,us,uk ŻEBY ZŁAPAĆ KURY Z CAŁEGO ŚWIATA
-            events = api_get(f"/sports/{sp}/odds/", {"regions": "eu,us,uk", "markets": "h2h", "oddsFormat": "decimal"})
-        except Exception:
-            continue
-
+        events = api_get(f"/sports/{sp}/odds/", {"regions": "eu,us,uk", "markets": "h2h", "oddsFormat": "decimal"})
         if not events:
             continue
 
@@ -208,10 +213,10 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates found: {len(candidates)}", flush=True)
+    print(f"-> Total night candidates found: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in current window. Will retry in next loop.", flush=True)
+        print("-> No candidates found in window.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -230,7 +235,7 @@ def run_cycle():
                     continue
                 valid_coupons.append({
                     "combo": combo, "total_odds": total_odds, "signature": sig,
-                    "event_ids": e_ids, "type": f"AKO{r} NIGHT SWEEP"
+                    "event_ids": e_ids, "type": f"AKO{r} NIGHT ELITE"
                 })
 
     random.shuffle(valid_coupons)
@@ -244,11 +249,11 @@ def run_cycle():
             continue
 
         tot = coupon["total_odds"]
-        lines = [f"<b>🥷 PITOS v5.44 | {coupon['type']} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.46 | {coupon['type']} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
-        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: 3j (75 zł)</b>"])
+        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {STAKE_UNITS} ({STAKE_PLN} zł)</b>"])
         msg = "\n".join(lines)
         c_id = coupon["signature"][:24]
 
@@ -269,7 +274,7 @@ def run_cycle():
     print(f"-> Cycle done. Sent: {sent}", flush=True)
 
 def main():
-    print("-> PITOS v5.44 starting...", flush=True)
+    print("-> PITOS v5.46 starting...", flush=True)
     init_db()
     
     while True:
