@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.34 — Fixed price condition syntax in extraction loop.
+# PITOS v5.35 — Final syntax fix for prices append closure.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.34 Active")
+        self.wfile.write(b"PITOS v5.35 Active")
     def log_message(self, format, *args):
         pass
 
@@ -69,7 +69,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.34")
+log = logging.getLogger("pitos-v5.35")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -114,7 +114,7 @@ def init_db():
             )
         """)
             
-    print("-> PITOS v5.34 DB initialized (AKO only mode).", flush=True)
+    print("-> PITOS v5.35 DB initialized (AKO only mode).", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -219,4 +219,62 @@ def extract_candidates(sport_key):
             try:
                 pr = float(o.get("price"))
                 if math.isfinite(pr) and pr > 1.0:
-                    prices.append((o.
+                    prices.append((o.get("name", ""), pr))
+            except Exception:
+                continue
+
+        if len(prices) < 2:
+            continue
+
+        probs = [(name, pr, 1.0 / pr) for name, pr in prices]
+        p_sum = sum(p[2] for p in probs)
+        if p_sum <= 0:
+            continue
+
+        ev_name = f"{home} vs {away}"
+
+        for name, pr, raw_p in probs:
+            norm_p = raw_p / p_sum
+            if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
+                candidates.append({
+                    "event_id": ev_id,
+                    "event": ev_name,
+                    "selection": name,
+                    "odds": pr,
+                    "prob": norm_p,
+                    "sport": sport_key,
+                    "commence": commence
+                })
+    return candidates
+
+
+def run_cycle():
+    print("-> PITOS v5.35 AKO-only scan started...", flush=True)
+    sports = get_sports()
+    print(f"-> Active sports pooled: {len(sports)}", flush=True)
+
+    all_candidates = []
+    for sp in sports:
+        all_candidates.extend(extract_candidates(sp))
+
+    unique_map = {c["event_id"]: c for c in all_candidates}
+    candidates = list(unique_map.values())
+    print(f"-> Total unique candidates found: {len(candidates)}", flush=True)
+
+    if not candidates:
+        print("-> No candidates found in current window.", flush=True)
+        return
+
+    candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
+    random.shuffle(candidates)
+
+    valid_coupons = []
+
+    # TYLKO AKO2 ORAZ AKO3
+    for r in [2, 3]:
+        for combo in combinations(candidates, r):
+            e_ids = [c["event_id"] for c in combo]
+            if len(set(e_ids)) != r:
+                continue
+
+            total_odds
