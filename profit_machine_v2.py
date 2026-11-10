@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.51 — Optimized scan interval (2 hours) to conserve API credits.
+# PITOS v5.52 — Fixed indentation alignment and clean spacing.
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.51 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.52 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -48,8 +48,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
-# ZMIANA: Skan co 2 godziny (7200 sekund) oszczędza darmowe kredyty API
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200"))
+SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "7200")) # Co 2h
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.18"))
 MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.00"))
@@ -85,7 +84,7 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print("-> Purged old DB for 2h interval version.", flush=True)
+            print("-> Purged old DB for clean indentation version.", flush=True)
         except Exception:
             pass
     with get_db() as conn:
@@ -108,7 +107,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v5.51 DB ready.", flush=True)
+    print("-> PITOS v5.52 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -146,7 +145,7 @@ def get_dynamic_stake(total_odds, combo_len):
         return 2, 2 * UNIT_PLN  # 2j (50 zł)
 
 def run_cycle():
-    print("-> Starting 2h-interval day scan cycle (v5.51)...", flush=True)
+    print("-> Starting 2h-interval day scan cycle (v5.52)...", flush=True)
     sports_data = api_get("/sports/")
     if not sports_data:
         print("-> Failed to fetch sports list.", flush=True)
@@ -252,7 +251,7 @@ def run_cycle():
         combo_len = len(coupon["combo"])
         units, stake_pln = get_dynamic_stake(tot, combo_len)
 
-        lines = [f"<b>🥷 PITOS v5.51 | {coupon['type']} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.52 | {coupon['type']} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
@@ -281,7 +280,7 @@ def run_cycle():
     print(f"-> Cycle done. Sent: {sent}", flush=True)
 
 def main():
-    print("-> PITOS v5.51 starting...", flush=True)
+    print("-> PITOS v5.52 starting...", flush=True)
     init_db()
     
     while True:
@@ -294,4 +293,3 @@ def main():
 
 if __name__ == "__main__":
     main()
- LP
