@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.33 — Fixed f-string syntax in print statement.
+# PITOS v5.34 — Fixed price condition syntax in extraction loop.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.33 Active")
+        self.wfile.write(b"PITOS v5.34 Active")
     def log_message(self, format, *args):
         pass
 
@@ -69,7 +69,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.33")
+log = logging.getLogger("pitos-v5.34")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -114,7 +114,7 @@ def init_db():
             )
         """)
             
-    print("-> PITOS v5.33 DB initialized (AKO only mode).", flush=True)
+    print("-> PITOS v5.34 DB initialized (AKO only mode).", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -218,4 +218,5 @@ def extract_candidates(sport_key):
         for o in outcomes:
             try:
                 pr = float(o.get("price"))
-                if math.isfinite(pr) and pr >
+                if math.isfinite(pr) and pr > 1.0:
+                    prices.append((o.
