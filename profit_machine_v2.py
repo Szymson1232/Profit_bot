@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.37 — Immediate scan execution on startup.
+# PITOS v5.38 — Full night expansion including NCAA and all available sports.
 
 import os
 import sys
@@ -20,7 +20,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.37 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.38 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -51,17 +51,17 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
-MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "55"))
+MAX_SPORTS = int(os.getenv("MAX_SPORTS_PER_CYCLE", "75"))  # ZWIĘKSZONA PULA NA WSZYSTKIE LIGI I NCAA
 BOOKMAKER = os.getenv("BOOKMAKER_NAME", "Betclic").strip().lower()
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.15"))
-MAX_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "2.50")) if False else float(os.getenv("MAX_SINGLE_ODDS", "2.50"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.70"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.90"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.00"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.15"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "16"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.10"))  # SZERSZE OTWARCIE NA NOCNE VALUE
+LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "18"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -71,7 +71,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.37")
+log = logging.getLogger("pitos-v5.38")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -113,7 +113,7 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-    print("-> PITOS v5.37 DB initialized (AKO only mode).", flush=True)
+    print("-> PITOS v5.38 DB initialized (Full NCAA & night expansion).", flush=True)
 
 def api_get(path, params=None):
     if not API_KEY:
@@ -233,9 +233,9 @@ def extract_candidates(sport_key):
     return candidates
 
 def run_cycle():
-    print("-> PITOS v5.37 immediate tonight scan started...", flush=True)
+    print("-> PITOS v5.38 full expansion scan started...", flush=True)
     sports = get_sports()
-    print(f"-> Active sports pooled: {len(sports)}", flush=True)
+    print(f"-> Active sports pooled (including NCAA): {len(sports)}", flush=True)
 
     all_candidates = []
     for sp in sports:
@@ -246,7 +246,7 @@ def run_cycle():
     print(f"-> Total unique candidates found: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found for tonight.", flush=True)
+        print("-> No candidates found.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -270,7 +270,7 @@ def run_cycle():
                     "total_odds": total_odds,
                     "signature": sig,
                     "event_ids": e_ids,
-                    "type": f"AKO{r} TONIGHT"
+                    "type": f"AKO{r} NCAA/NIGHT"
                 })
 
     random.shuffle(valid_coupons)
@@ -289,69 +289,10 @@ def run_cycle():
         stake_u = 3
         stake_pln = 75
 
-        lines = [f"<b>🥷 PITOS v5.37 | {c_type} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.38 | {c_type} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             ev_esc = html.escape(item["event"])
             sel_esc = html.escape(item["selection"])
             sp_esc = html.escape(item["sport"])
             kick = item["commence"].strftime("%d.%m %H:%M UTC")
-            lines.append(f"{idx}. <b>{ev_esc}</b>\n   Typ: <i>{sel_esc}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {sp_esc} | {kick}")
-
-        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {stake_u}j ({stake_pln} zł)</b>"])
-        msg = "\n".join(lines)
-        c_id = coupon["signature"][:24]
-
-        try:
-            with get_db() as conn:
-                now_str = datetime.now(timezone.utc).isoformat()
-                conn.execute(
-                    "INSERT OR IGNORE INTO coupons (coupon_id, signature, message, status, created_at) VALUES (?, ?, ?, 'sent', ?)",
-                    (c_id, coupon["signature"], msg, now_str)
-                )
-                for item in coupon["combo"]:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO sent_events (event_id, sport_key, event_name, coupon_id, status, created_at) VALUES (?, ?, ?, ?, 'sent', ?)",
-                        (item["event_id"], item["sport"], item["event"], c_id, now_str)
-                    )
-            telegram_send(msg)
-            MEM_SIGNATURES.add(coupon["signature"])
-            for eid in coupon["event_ids"]:
-                MEM_EVENTS.add(eid)
-            used_in_cycle.update(coupon["event_ids"])
-            sent += 1
-            print(f"-> Published {c_type} coupon {c_id} successfully!", flush=True)
-        except Exception as e:
-            print(f"-> Failed to send coupon {c_id}: {e}", flush=True)
-
-    print(f"-> Scan cycle finished. Sent {sent} coupons.", flush=True)
-
-def background_worker():
-    init_db()
-    # NATYCHMIASTOWY SKAN PRZY STARCIE (BEZ CZEKANIA NA PIERWSZĄ GODZINĘ)
-    print("-> Triggering immediate startup scan for tonight...", flush=True)
-    try:
-        run_cycle()
-    except Exception as e:
-        print(f"-> Startup scan crashed: {e}", flush=True)
-
-    while True:
-        start = time.monotonic()
-        try:
-            run_cycle()
-        except Exception as e:
-            print(f"-> Cycle crashed with error: {e}", flush=True)
-
-        elapsed = time.monotonic() - start
-        sleep_time = max(30, SCAN_INTERVAL - int(elapsed))
-        print(f"-> Sleeping for {sleep_time} seconds...", flush=True)
-        time.sleep(sleep_time)
-
-def main():
-    print("-> PITOS v5.37 starting up...", flush=True)
-    t_worker = threading.Thread(target=background_worker, daemon=True)
-    t_worker.start()
-    while True:
-        time.sleep(3600)
-
-if __name__ == "__main__":
-    main()
+            lines.append(f"{idx}. <b>{ev_esc}</b>\n   Typ: <i>{sel_esc}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {sp_esc} | {kick
