@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.43 — Universal bookmaker fallback and instant odds extraction.
+# PITOS v5.44 — Fixed API regions, live-window inclusion, and debug logging.
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.43 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.44 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -51,13 +51,14 @@ SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
 
 MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.10"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.20"))
-MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.80"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.50"))
+MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.75"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.50"))
 
 MAX_COUPONS = int(os.getenv("MAX_AKOS_PER_CYCLE", "3"))
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.01"))
-LOOKAHEAD = int(os.getenv("LOOKAHEAD_HOURS", "24"))
+PAST_WINDOW_HOURS = 2   # Uwzględniamy mecze, które zaciekły do 2h temu (trwające)
+FUTURE_WINDOW_HOURS = 24
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -106,7 +107,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v5.43 DB ready.", flush=True)
+    print("-> PITOS v5.44 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -116,6 +117,8 @@ def api_get(path, params=None):
     if res.status_code == 429:
         time.sleep(10)
         res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
+    if res.status_code != 200:
+        print(f"-> API Error {res.status_code} on {path}: {res.text[:200]}", flush=True)
     res.raise_for_status()
     return res.json()
 
@@ -136,7 +139,7 @@ def parse_time(val):
         return None
 
 def run_cycle():
-    print("-> Starting universal sweep scan cycle...", flush=True)
+    print("-> Starting full sweep scan cycle (v5.44)...", flush=True)
     try:
         sports_data = api_get("/sports/")
     except Exception as e:
@@ -148,12 +151,17 @@ def run_cycle():
 
     candidates = []
     now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=PAST_WINDOW_HOURS)
+    window_end = now + timedelta(hours=FUTURE_WINDOW_HOURS)
 
     for sp in sports:
         try:
-            # Pobieramy rynki dla każdej dyscypliny bez forsowania regionu eu, jeśli API ma domyślne
-            events = api_get(f"/sports/{sp}/odds/", {"markets": "h2h", "oddsFormat": "decimal"})
+            # PRZYWRACAMY REGIONY eu,us,uk ŻEBY ZŁAPAĆ KURY Z CAŁEGO ŚWIATA
+            events = api_get(f"/sports/{sp}/odds/", {"regions": "eu,us,uk", "markets": "h2h", "oddsFormat": "decimal"})
         except Exception:
+            continue
+
+        if not events:
             continue
 
         for ev in events:
@@ -161,7 +169,7 @@ def run_cycle():
             if not ev_id:
                 continue
             commence = parse_time(ev.get("commence_time"))
-            if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
+            if not commence or commence < window_start or commence > window_end:
                 continue
 
             home, away = ev.get("home_team", "Unknown"), ev.get("away_team", "Unknown")
@@ -169,7 +177,6 @@ def run_cycle():
             if not bookies:
                 continue
 
-            # Bierze absolutnie pierwszy dostępny bukmacher z oferty, bez filtrowania po nazwie
             bk = bookies[0]
             h2h = next((m for m in bk.get("markets", []) if m.get("key") == "h2h"), None)
             if not h2h:
@@ -201,10 +208,10 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total unique candidates found after universal fallback: {len(candidates)}", flush=True)
+    print(f"-> Total unique candidates found: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in window.", flush=True)
+        print("-> No candidates found in current window. Will retry in next loop.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -223,7 +230,7 @@ def run_cycle():
                     continue
                 valid_coupons.append({
                     "combo": combo, "total_odds": total_odds, "signature": sig,
-                    "event_ids": e_ids, "type": f"AKO{r} SWEEP"
+                    "event_ids": e_ids, "type": f"AKO{r} NIGHT SWEEP"
                 })
 
     random.shuffle(valid_coupons)
@@ -237,7 +244,7 @@ def run_cycle():
             continue
 
         tot = coupon["total_odds"]
-        lines = [f"<b>🥷 PITOS v5.43 | {coupon['type']} #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v5.44 | {coupon['type']} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
@@ -262,7 +269,7 @@ def run_cycle():
     print(f"-> Cycle done. Sent: {sent}", flush=True)
 
 def main():
-    print("-> PITOS v5.43 starting...", flush=True)
+    print("-> PITOS v5.44 starting...", flush=True)
     init_db()
     
     while True:
