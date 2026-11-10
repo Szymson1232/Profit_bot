@@ -1,8 +1,37 @@
 #!/usr/bin/env python3
-# PITOS v5.35 — Final syntax fix for prices append closure.
+# PITOS v5.36 — Bulletproof instant response engine for Railway.
 
 import os
 import sys
+import socket
+import threading
+
+PORT = int(os.getenv("PORT", "8080"))
+
+# ================= NATYCHMIASTOWY BIND PORTU DLA RAILWAY =================
+def instant_bind():
+    try:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", PORT))
+        server.listen(5)
+        print(f"-> Railway health port {PORT} bound instantly.", flush=True)
+        while True:
+            conn, _ = server.accept()
+            try:
+                conn.recv(512)
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.36 Active"
+                conn.sendall(response)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+    except Exception as e:
+        print(f"-> Bind error: {e}", flush=True)
+
+threading.Thread(target=instant_bind, daemon=True).start()
+
+# ================= RESZTA PAKIETÓW I LOGIKA =================
 import time
 import math
 import sqlite3
@@ -13,36 +42,9 @@ import random
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 import requests
-import http.server
-import socketserver
-import threading
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
-# ================= RAILWAY INSTANT HEALTH CHECK =================
-PORT = int(os.getenv("PORT", "8080"))
-
-class HealthHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"PITOS v5.35 Active")
-    def log_message(self, format, *args):
-        pass
-
-def run_http_server():
-    try:
-        with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
-            print(f"-> Instant health server active on port {PORT}", flush=True)
-            httpd.serve_forever()
-    except Exception as e:
-        print(f"-> Health server error: {e}", flush=True)
-
-t_http = threading.Thread(target=run_http_server, daemon=True)
-t_http.start()
-
-
-# ================= CONFIGURATION =================
 API_KEY = os.getenv("ODDS_API_KEY", "3daceb3cf3247c5445f38d2392c47cc9").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
@@ -69,14 +71,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.35")
+log = logging.getLogger("pitos-v5.36")
 session = requests.Session()
 
 MEM_EVENTS = set()
 MEM_SIGNATURES = set()
 
-
-# ================= DATABASE & PURGE =================
 def get_db():
     parent = os.path.dirname(os.path.abspath(SQLITE_PATH))
     if parent:
@@ -113,33 +113,23 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-            
-    print("-> PITOS v5.35 DB initialized (AKO only mode).", flush=True)
+    print("-> PITOS v5.36 DB initialized (AKO only mode).", flush=True)
 
-
-# ================= API & TELEGRAM =================
 def api_get(path, params=None):
     if not API_KEY:
         raise RuntimeError("Missing ODDS_API_KEY")
     p = dict(params or {})
     p["apiKey"] = API_KEY
-    
     time.sleep(0.3)
     res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
-    
     if res.status_code == 429:
-        log.warning("Rate limit hit (429). Sleeping for 10 seconds...")
         time.sleep(10)
         res = session.get(f"{API_BASE}{path}", params=p, timeout=20)
-        
     if res.status_code != 200:
-        log.error("API Error %s: %s", res.status_code, res.text[:300])
         res.raise_for_status()
     return res.json()
 
 def telegram_send(msg):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError("Missing Telegram credentials")
     url = f"{TELEGRAM_BASE}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -150,11 +140,8 @@ def telegram_send(msg):
     res = session.post(url, json=payload, timeout=20)
     data = res.json() if res.status_code == 200 else {}
     if res.status_code != 200 or not data.get("ok"):
-        raise RuntimeError(f"Telegram failed: {res.status_code}")
-    return data["result"]["message_id"]
+        raise RuntimeError("Telegram failed")
 
-
-# ================= CORE LOGIC =================
 def parse_time(val):
     if not val:
         return None
@@ -191,7 +178,6 @@ def extract_candidates(sport_key):
         ev_id = ev.get("id")
         if not ev_id:
             continue
-
         commence = parse_time(ev.get("commence_time"))
         if not commence or commence < now or commence > now + timedelta(hours=LOOKAHEAD):
             continue
@@ -232,7 +218,6 @@ def extract_candidates(sport_key):
             continue
 
         ev_name = f"{home} vs {away}"
-
         for name, pr, raw_p in probs:
             norm_p = raw_p / p_sum
             if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
@@ -247,34 +232,6 @@ def extract_candidates(sport_key):
                 })
     return candidates
 
-
 def run_cycle():
-    print("-> PITOS v5.35 AKO-only scan started...", flush=True)
+    print("-> PITOS v5.36 AKO-only scan started...", flush=True)
     sports = get_sports()
-    print(f"-> Active sports pooled: {len(sports)}", flush=True)
-
-    all_candidates = []
-    for sp in sports:
-        all_candidates.extend(extract_candidates(sp))
-
-    unique_map = {c["event_id"]: c for c in all_candidates}
-    candidates = list(unique_map.values())
-    print(f"-> Total unique candidates found: {len(candidates)}", flush=True)
-
-    if not candidates:
-        print("-> No candidates found in current window.", flush=True)
-        return
-
-    candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
-    random.shuffle(candidates)
-
-    valid_coupons = []
-
-    # TYLKO AKO2 ORAZ AKO3
-    for r in [2, 3]:
-        for combo in combinations(candidates, r):
-            e_ids = [c["event_id"] for c in combo]
-            if len(set(e_ids)) != r:
-                continue
-
-            total_odds
