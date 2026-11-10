@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.32 — Lightweight HTTP server fix for Railway log output.
+# PITOS v5.33 — Fixed f-string syntax in print statement.
 
 import os
 import sys
@@ -26,7 +26,7 @@ class HealthHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PITOS v5.32 Active")
+        self.wfile.write(b"PITOS v5.33 Active")
     def log_message(self, format, *args):
         pass
 
@@ -69,7 +69,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
-log = logging.getLogger("pitos-v5.32")
+log = logging.getLogger("pitos-v5.33")
 session = requests.Session()
 
 MEM_EVENTS = set()
@@ -114,7 +114,7 @@ def init_db():
             )
         """)
             
-    print("-> PITOS v5.32 DB initialized (AKO only mode).", flush=True)
+    print("-> PITOS v5.33 DB initialized (AKO only mode).", flush=True)
 
 
 # ================= API & TELEGRAM =================
@@ -218,45 +218,4 @@ def extract_candidates(sport_key):
         for o in outcomes:
             try:
                 pr = float(o.get("price"))
-                if math.isfinite(pr) and pr > 1.0:
-                    prices.append((o.get("name", ""), pr))
-            except Exception:
-                continue
-
-        if len(prices) < 2:
-            continue
-
-        probs = [(name, pr, 1.0 / pr) for name, pr in prices]
-        p_sum = sum(p[2] for p in probs)
-        if p_sum <= 0:
-            continue
-
-        ev_name = f"{home} vs {away}"
-
-        for name, pr, raw_p in probs:
-            norm_p = raw_p / p_sum
-            if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
-                candidates.append({
-                    "event_id": ev_id,
-                    "event": ev_name,
-                    "selection": name,
-                    "odds": pr,
-                    "prob": norm_p,
-                    "sport": sport_key,
-                    "commence": commence
-                })
-    return candidates
-
-
-def run_cycle():
-    print("-> PITOS v5.32 AKO-only scan started...", flush=True)
-    sports = get_sports()
-    print(f"-> Active sports pooled: {len(sports)}", flush=True)
-
-    all_candidates = []
-    for sp in sports:
-        all_candidates.extend(extract_candidates(sp))
-
-    unique_map = {c["event_id"]: c for c in all_candidates}
-    candidates = list(unique_map.values())
-    print(f"-> Total unique candidates found: {
+                if math.isfinite(pr) and pr >
