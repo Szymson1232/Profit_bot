@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v5.48 — Fixed unterminated string literal in print statement.
+# PITOS v5.50 — Dynamic unit staking (1j = 25 PLN, range 1j-3j).
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.48 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v5.50 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -50,16 +50,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v5.db")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL_SECONDS", "3600"))
 
-MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.10"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.50"))
-MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.75"))
-MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.50"))
+MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.18"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.00"))
+MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.85"))
+MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.20"))
 
-MAX_COUPONS = 2
-STAKE_PLN = 50
-STAKE_UNITS = "2j"
+MAX_COUPONS = 3
+UNIT_PLN = 25  # 1j = 25 zł
 
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.01"))
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.12"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -85,7 +84,7 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print("-> Purged old DB.", flush=True)
+            print("-> Purged old DB for dynamic staking.", flush=True)
         except Exception:
             pass
     with get_db() as conn:
@@ -108,7 +107,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v5.48 DB ready.", flush=True)
+    print("-> PITOS v5.50 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -128,13 +127,6 @@ def api_get(path, params=None):
         return None
     return res.json()
 
-def telegram_send(msg):
-    url = f"{TELEGRAM_BASE}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True}
-    res = session.post(url, json=payload, timeout=20)
-    if res.status_code != 200 or not res.json().get("ok"):
-        raise RuntimeError("Telegram failed")
-
 def parse_time(val):
     if not val:
         return None
@@ -144,8 +136,17 @@ def parse_time(val):
     except Exception:
         return None
 
+def get_dynamic_stake(total_odds, combo_len):
+    # Dynamiczne stawkowanie od 1j do 3j w zależności od kursu i liczby zdarzeń
+    if total_odds < 2.20 and combo_len == 2:
+        return 3, 3 * UNIT_PLN  # 3j (75 zł) na bezpieczniejsze AKO2
+    elif total_odds > 3.00:
+        return 1, 1 * UNIT_PLN  # 1j (25 zł) na wyższy kurs / ryzyko
+    else:
+        return 2, 2 * UNIT_PLN  # 2j (50 zł) standard
+
 def run_cycle():
-    print("-> Starting night 10/11 Nov target scan (v5.48)...", flush=True)
+    print("-> Starting dynamic staking day scan (v5.50)...", flush=True)
     sports_data = api_get("/sports/")
     if not sports_data:
         print("-> Failed to fetch sports list.", flush=True)
@@ -160,8 +161,8 @@ def run_cycle():
     candidates = []
     
     now = datetime.now(timezone.utc)
-    target_end = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
-    window_start = now - timedelta(hours=2)
+    target_end = datetime(2026, 11, 10, 23, 59, tzinfo=timezone.utc)
+    window_start = now - timedelta(hours=1)
 
     for sp in sports:
         events = api_get(f"/sports/{sp}/odds/", {"regions": "eu,us,uk", "markets": "h2h", "oddsFormat": "decimal"})
@@ -212,10 +213,10 @@ def run_cycle():
 
     unique_map = {c["event_id"]: c for c in candidates}
     candidates = list(unique_map.values())
-    print(f"-> Total candidates for night 10/11 Nov: {len(candidates)}", flush=True)
+    print(f"-> Total dynamic candidates found: {len(candidates)}", flush=True)
 
     if not candidates:
-        print("-> No candidates found in 10/11 window.", flush=True)
+        print("-> No candidates found in window.", flush=True)
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -234,7 +235,7 @@ def run_cycle():
                     continue
                 valid_coupons.append({
                     "combo": combo, "total_odds": total_odds, "signature": sig,
-                    "event_ids": e_ids, "type": f"AKO{r} 10/11 NOV ELITE"
+                    "event_ids": e_ids, "type": f"AKO{r} DYNAMIC"
                 })
 
     random.shuffle(valid_coupons)
@@ -248,11 +249,14 @@ def run_cycle():
             continue
 
         tot = coupon["total_odds"]
-        lines = [f"<b>🥷 PITOS v5.48 | {coupon['type']} #{sent+1}</b>", ""]
+        combo_len = len(coupon["combo"])
+        units, stake_pln = get_dynamic_stake(tot, combo_len)
+
+        lines = [f"<b>🥷 PITOS v5.50 | {coupon['type']} #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
-        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {STAKE_UNITS} ({STAKE_PLN} zł)</b>"])
+        lines.extend(["", f"📊 <b>Kurs łączny: {tot:.2f}</b>", f"💰 <b>Zalecana stawka: {units}j ({stake_pln} zł)</b>"])
         msg = "\n".join(lines)
         c_id = coupon["signature"][:24]
 
@@ -262,18 +266,22 @@ def run_cycle():
                 conn.execute("INSERT OR IGNORE INTO coupons VALUES (?, ?, ?, 'sent', ?)", (c_id, coupon["signature"], msg, now_str))
                 for item in coupon["combo"]:
                     conn.execute("INSERT OR IGNORE INTO sent_events VALUES (?, ?, ?, ?, 'sent', ?)", (item["event_id"], item["sport"], item["event"], c_id, now_str))
-            telegram_send(msg)
+            
+            res = session.post(f"{TELEGRAM_BASE}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=20)
+            if res.status_code != 200:
+                raise RuntimeError("Telegram failed")
+                
             MEM_SIGNATURES.add(coupon["signature"])
             used_in_cycle.update(coupon["event_ids"])
             sent += 1
-            print(f"-> Sent coupon {c_id}", flush=True)
+            print(f"-> Sent dynamic coupon {c_id} with {units}j", flush=True)
         except Exception as e:
             print(f"-> Send error: {e}", flush=True)
 
     print(f"-> Cycle done. Sent: {sent}", flush=True)
 
 def main():
-    print("-> PITOS v5.48 starting...", flush=True)
+    print("-> PITOS v5.50 starting...", flush=True)
     init_db()
     
     while True:
