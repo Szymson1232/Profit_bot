@@ -43,7 +43,7 @@ def instant_bind():
 threading.Thread(target=instant_bind, daemon=True).start()
 
 # ================= CONFIG =================
-API_KEY = os.getenv("ODDS_API_KEY", "7cb0af5ac3f9a296611ea206272d53a0").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "15ff80d0ce5f24bc6b582b6fc6b9ff11").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
