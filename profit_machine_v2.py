@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v6.03 — Japanese Precision Engine (Updated API Key, Scheduled 06:30 & 22:45, Value Singles & AKO, Pass logic).
+# PITOS v6.05 — Japanese Precision Engine (Night 21:00 UTC / 22:00 PL, Day 05:30 UTC / 06:30 PL).
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v6.03 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v6.05 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -43,7 +43,6 @@ def instant_bind():
 threading.Thread(target=instant_bind, daemon=True).start()
 
 # ================= CONFIG =================
-# Nowy klucz API zaktualizowany bezpośrednio
 API_KEY = os.getenv("ODDS_API_KEY", "7cb0af5ac3f9a296611ea206272d53a0").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
@@ -84,7 +83,7 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print("-> Purged old DB for Japanese Engine v6.03.", flush=True)
+            print("-> Purged old DB for Japanese Engine v6.05.", flush=True)
         except Exception:
             pass
     with get_db() as conn:
@@ -107,7 +106,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v6.03 DB ready.", flush=True)
+    print("-> PITOS v6.05 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -154,7 +153,7 @@ def run_session(session_type):
     sports_data = api_get("/sports/")
     if not sports_data:
         print("-> Failed to fetch sports list.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.03 | Sesja {session_type}</b>\n❌ Błąd pobierania danych z API. Skan wstrzymany.")
+        telegram_send(f"<b>🥷 PITOS v6.05 | Sesja {session_type}</b>\n❌ Błąd pobierania danych z API. Skan wstrzymany.")
         return
 
     sports = []
@@ -228,7 +227,7 @@ def run_session(session_type):
 
     if len(candidates) < 2:
         print(f"-> Oferta zbyt słaba dla sesji {session_type}. Wysyłam komunikat PASS.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.03 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
+        telegram_send(f"<b>🥷 PITOS v6.05 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -273,7 +272,7 @@ def run_session(session_type):
         combo_len = len(coupon["combo"])
         units, stake_pln = get_dynamic_stake(tot, combo_len)
 
-        lines = [f"<b>🥷 PITOS v6.03 | {coupon['type']} ({session_type}) #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v6.05 | {coupon['type']} ({session_type}) #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
@@ -298,34 +297,34 @@ def run_session(session_type):
 
     if sent == 0:
         print(f"-> Brak unikalnych kuponów po filtrach dla {session_type}. Wysyłam PASS.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.03 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
+        telegram_send(f"<b>🥷 PITOS v6.05 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
     else:
         print(f"-> Sesja {session_type} zakończona. Wysłano kuponów: {sent}", flush=True)
 
 def scheduler_loop():
-    print("-> Japoński harmonogram uruchomiony (06:30 / 22:45).", flush=True)
+    print("-> Japoński harmonogram uruchomiony (Dzień: 05:30 UTC / 06:30 PL | Noc: 21:00 UTC / 22:00 PL).", flush=True)
     while True:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
         minute = now_utc.minute
 
-        # Sesja Dzienna: 06:30 UTC
-        if hour == 6 and minute == 30:
+        # Sesja Dzienna: 05:30 UTC (dokładnie 06:30 czasu polskiego)
+        if hour == 5 and minute == 30:
             run_session("DZIEŃ")
             time.sleep(70)
         
-        # Sesja Nocna: 22:45 UTC
-        elif hour == 22 and minute == 45:
+        # Sesja Nocna: 21:00 UTC (dokładnie 22:00 czasu polskiego)
+        elif hour == 21 and minute == 0:
             run_session("NOC")
             time.sleep(70)
 
         time.sleep(30)
 
 def main():
-    print("-> PITOS v6.03 (Japanese Precision) starting...", flush=True)
+    print("-> PITOS v6.05 (Japanese Precision) starting...", flush=True)
     init_db()
     
-    # Startowy skan testowy przy wdrożeniu na nowym kluczu
+    # Startowy skan testowy przy wdrożeniu
     run_session("NOC (START)")
 
     threading.Thread(target=scheduler_loop, daemon=True).start()
