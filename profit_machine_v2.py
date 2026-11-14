@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v6.05 — Japanese Precision Engine (Night 21:00 UTC / 22:00 PL, Day 05:30 UTC / 06:30 PL).
+# PITOS v6.06 — Japanese Precision Engine (Updated API Key, 4j/100 PLN stake for AKO2 pewniaki).
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v6.05 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v6.06 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -57,7 +57,7 @@ MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "2.00"))
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.50"))
 
 MAX_COUPONS_PER_SESSION = 10
-UNIT_PLN = 25  # 1j = 25 zł, 2j = 50 zł, 3j = 75 zł
+UNIT_PLN = 25  # 1j = 25 zł, 2j = 50 zł, 3j = 75 zł, 4j = 100 zł (pewniaki AKO2)
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.15"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
@@ -83,7 +83,7 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print("-> Purged old DB for Japanese Engine v6.05.", flush=True)
+            print("-> Purged old DB for Japanese Engine v6.06.", flush=True)
         except Exception:
             pass
     with get_db() as conn:
@@ -106,7 +106,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v6.05 DB ready.", flush=True)
+    print("-> PITOS v6.06 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -140,8 +140,11 @@ def parse_time(val):
     except Exception:
         return None
 
-def get_dynamic_stake(total_odds, combo_len):
-    if total_odds < 2.30 and combo_len <= 2:
+def get_dynamic_stake(total_odds, combo_len, min_prob_in_combo=0.0):
+    # 4j (100 zł) dedykowana dla pewniaków AKO2 o wysokim prawdopodobieństwie i niskim progu pomyłki
+    if combo_len == 2 and min_prob_in_combo >= 0.48 and total_odds <= 2.80:
+        return 4, 4 * UNIT_PLN  # 100 zł (Pewniak AKO2 bez podatku)
+    elif total_odds < 2.30 and combo_len <= 2:
         return 3, 3 * UNIT_PLN  # 75 zł
     elif total_odds > 3.50 or combo_len == 1:
         return 1, 1 * UNIT_PLN  # 25 zł
@@ -153,7 +156,7 @@ def run_session(session_type):
     sports_data = api_get("/sports/")
     if not sports_data:
         print("-> Failed to fetch sports list.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.05 | Sesja {session_type}</b>\n❌ Błąd pobierania danych z API. Skan wstrzymany.")
+        telegram_send(f"<b>🥷 PITOS v6.06 | Sesja {session_type}</b>\n❌ Błąd pobierania danych z API. Skan wstrzymany.")
         return
 
     sports = []
@@ -227,7 +230,7 @@ def run_session(session_type):
 
     if len(candidates) < 2:
         print(f"-> Oferta zbyt słaba dla sesji {session_type}. Wysyłam komunikat PASS.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.05 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
+        telegram_send(f"<b>🥷 PITOS v6.06 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
@@ -239,7 +242,7 @@ def run_session(session_type):
             if sig not in MEM_SIGNATURES:
                 valid_coupons.append({
                     "combo": [c], "total_odds": c["odds"], "signature": sig,
-                    "event_ids": [c["event_id"]], "type": "SINGIEL VALUE"
+                    "event_ids": [c["event_id"]], "type": "SINGIEL VALUE", "min_prob": c["prob"]
                 })
 
     for r in [2, 3]:
@@ -253,9 +256,10 @@ def run_session(session_type):
                 sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
                 if sig in MEM_SIGNATURES:
                     continue
+                min_p_in_combo = min(i["prob"] for i in combo)
                 valid_coupons.append({
                     "combo": combo, "total_odds": total_odds, "signature": sig,
-                    "event_ids": e_ids, "type": f"AKO{r} PRECYZYJNY"
+                    "event_ids": e_ids, "type": f"AKO{r} PRECYZYJNY", "min_prob": min_p_in_combo
                 })
 
     random.shuffle(valid_coupons)
@@ -270,9 +274,10 @@ def run_session(session_type):
 
         tot = coupon["total_odds"]
         combo_len = len(coupon["combo"])
-        units, stake_pln = get_dynamic_stake(tot, combo_len)
+        min_p = coupon.get("min_prob", 0.0)
+        units, stake_pln = get_dynamic_stake(tot, combo_len, min_p)
 
-        lines = [f"<b>🥷 PITOS v6.05 | {coupon['type']} ({session_type}) #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v6.06 | {coupon['type']} ({session_type}) #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
@@ -297,7 +302,7 @@ def run_session(session_type):
 
     if sent == 0:
         print(f"-> Brak unikalnych kuponów po filtrach dla {session_type}. Wysyłam PASS.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.05 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
+        telegram_send(f"<b>🥷 PITOS v6.06 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
     else:
         print(f"-> Sesja {session_type} zakończona. Wysłano kuponów: {sent}", flush=True)
 
@@ -321,7 +326,7 @@ def scheduler_loop():
         time.sleep(30)
 
 def main():
-    print("-> PITOS v6.05 (Japanese Precision) starting...", flush=True)
+    print("-> PITOS v6.06 (Japanese Precision) starting...", flush=True)
     init_db()
     
     # Startowy skan testowy przy wdrożeniu
