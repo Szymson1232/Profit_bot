@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v6.06 — Japanese Precision Engine (Updated API Key, 4j/100 PLN stake for AKO2 pewniaki).
+# PITOS v7.0 — Professional Business Engine (Only AKO3 for Betclic Gra bez podatku + AKO2 for 4j / 100 PLN elite stakes).
 
 import os
 import sys
@@ -31,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v6.06 Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 18\r\n\r\nPITOS v7.0 Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -43,22 +43,23 @@ def instant_bind():
 threading.Thread(target=instant_bind, daemon=True).start()
 
 # ================= CONFIG =================
-API_KEY = os.getenv("ODDS_API_KEY", "e280d3a0405ee2befb407d74c67be11e").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "B45b11fc2205b2aec3164b05bb10b397").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
-SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v6.db")
+SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v7.db")
 
-TARGET_SPORTS_KEYWORDS = ["icehockey", "basketball", "soccer", "tennis", "eSports", "americanfootball"]
+# Skupiamy się na stabilnych rynkach o wysokiej płynności
+TARGET_SPORTS_KEYWORDS = ["icehockey", "basketball", "soccer"]
 
-MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.25"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "3.20"))
-MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "2.00"))
+MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.30"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.80"))
+MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "2.22"))  # Bufor na zaniżone kursy i marżę
 MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "4.50"))
 
 MAX_COUPONS_PER_SESSION = 10
-UNIT_PLN = 25  # 1j = 25 zł, 2j = 50 zł, 3j = 75 zł, 4j = 100 zł (pewniaki AKO2)
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.15"))
+UNIT_PLN = 25  # 1j = 25 zł, 2j = 50 zł, 3j = 75 zł, 4j = 100 zł (elitarne AKO2)
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.20"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -83,7 +84,7 @@ def init_db():
     if os.path.exists(SQLITE_PATH):
         try:
             os.remove(SQLITE_PATH)
-            print("-> Purged old DB for Japanese Engine v6.06.", flush=True)
+            print("-> Purged old DB for Professional Engine v7.0.", flush=True)
         except Exception:
             pass
     with get_db() as conn:
@@ -106,7 +107,7 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v6.06 DB ready.", flush=True)
+    print("-> PITOS v7.0 DB ready.", flush=True)
 
 def api_get(path, params=None):
     p = dict(params or {})
@@ -141,22 +142,22 @@ def parse_time(val):
         return None
 
 def get_dynamic_stake(total_odds, combo_len, min_prob_in_combo=0.0):
-    # 4j (100 zł) dedykowana dla pewniaków AKO2 o wysokim prawdopodobieństwie i niskim progu pomyłki
-    if combo_len == 2 and min_prob_in_combo >= 0.48 and total_odds <= 2.80:
-        return 4, 4 * UNIT_PLN  # 100 zł (Pewniak AKO2 bez podatku)
-    elif total_odds < 2.30 and combo_len <= 2:
-        return 3, 3 * UNIT_PLN  # 75 zł
-    elif total_odds > 3.50 or combo_len == 1:
-        return 1, 1 * UNIT_PLN  # 25 zł
+    # 4j (100 zł) dedykowana wyłącznie dla elitarnych AKO2 o wysokiej pewności (pod Betclic)
+    if combo_len == 2 and min_prob_in_combo >= 0.50 and total_odds <= 2.85:
+        return 4, 4 * UNIT_PLN  # 100 zł (Elitarny pewniak AKO2 bez podatku)
+    elif combo_len == 3 and total_odds <= 3.20:
+        return 3, 3 * UNIT_PLN  # 75 zł (Standardowy główny kupon AKO3)
+    elif combo_len == 3 and total_odds > 3.20:
+        return 2, 2 * UNIT_PLN  # 50 zł (Większy kurs łączny AKO3 - umiarkowana stawka)
     else:
         return 2, 2 * UNIT_PLN  # 50 zł
 
 def run_session(session_type):
-    print(f"-> Starting Japanese precision scan for [{session_type}]...", flush=True)
+    print(f"-> Starting Professional Business scan for [{session_type}]...", flush=True)
     sports_data = api_get("/sports/")
     if not sports_data:
         print("-> Failed to fetch sports list.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.06 | Sesja {session_type}</b>\n❌ Błąd pobierania danych z API. Skan wstrzymany.")
+        telegram_send(f"<b>🥷 PITOS v7.0 | Sesja {session_type}</b>\n❌ Błąd pobierania danych z API. Skan wstrzymany.")
         return
 
     sports = []
@@ -228,23 +229,15 @@ def run_session(session_type):
     candidates = list(unique_map.values())
     print(f"-> Total qualified value candidates: {len(candidates)}", flush=True)
 
-    if len(candidates) < 2:
+    if len(candidates) < 3:
         print(f"-> Oferta zbyt słaba dla sesji {session_type}. Wysyłam komunikat PASS.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.06 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
+        telegram_send(f"<b>🥷 PITOS v7.0 | Sesja {session_type}</b>\n📉 Słaba oferta rynku. Pass.")
         return
 
     candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
     valid_coupons = []
 
-    for c in candidates:
-        if 1.70 <= c["odds"] <= 2.80 and c["prob"] >= 0.40:
-            sig = hashlib.sha256(f"SINGLE:{c['event_id']}:{c['selection']}".encode("utf-8")).hexdigest()
-            if sig not in MEM_SIGNATURES:
-                valid_coupons.append({
-                    "combo": [c], "total_odds": c["odds"], "signature": sig,
-                    "event_ids": [c["event_id"]], "type": "SINGIEL VALUE", "min_prob": c["prob"]
-                })
-
+    # Całkowicie pomijamy single! Budujemy wyłącznie AKO2 (dla 4j) oraz AKO3 (główny konik pod podatek)
     for r in [2, 3]:
         for combo in combinations(candidates, r):
             e_ids = [c["event_id"] for c in combo]
@@ -257,9 +250,10 @@ def run_session(session_type):
                 if sig in MEM_SIGNATURES:
                     continue
                 min_p_in_combo = min(i["prob"] for i in combo)
+                coupon_type = f"AKO{r} GRA BEZ PODATKU" if r == 3 else "AKO2 ELITA 4j"
                 valid_coupons.append({
                     "combo": combo, "total_odds": total_odds, "signature": sig,
-                    "event_ids": e_ids, "type": f"AKO{r} PRECYZYJNY", "min_prob": min_p_in_combo
+                    "event_ids": e_ids, "type": coupon_type, "min_prob": min_p_in_combo
                 })
 
     random.shuffle(valid_coupons)
@@ -277,7 +271,7 @@ def run_session(session_type):
         min_p = coupon.get("min_prob", 0.0)
         units, stake_pln = get_dynamic_stake(tot, combo_len, min_p)
 
-        lines = [f"<b>🥷 PITOS v6.06 | {coupon['type']} ({session_type}) #{sent+1}</b>", ""]
+        lines = [f"<b>🥷 PITOS v7.0 | {coupon['type']} ({session_type}) #{sent+1}</b>", ""]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(f"{idx}. <b>{html.escape(item['event'])}</b>\n   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}")
 
@@ -302,40 +296,45 @@ def run_session(session_type):
 
     if sent == 0:
         print(f"-> Brak unikalnych kuponów po filtrach dla {session_type}. Wysyłam PASS.", flush=True)
-        telegram_send(f"<b>🥷 PITOS v6.06 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
+        telegram_send(f"<b>🥷 PITOS v7.0 | Sesja {session_type}</b>\n📉 Słaba oferta. Pass.")
     else:
         print(f"-> Sesja {session_type} zakończona. Wysłano kuponów: {sent}", flush=True)
 
 def scheduler_loop():
-    print("-> Japoński harmonogram uruchomiony (Dzień: 05:30 UTC / 06:30 PL | Noc: 21:00 UTC / 22:00 PL).", flush=True)
+    print("-> Japoński harmonogram v7.0 uruchomiony (Dzień: 05:30 UTC / 06:30 PL | Noc: 21:00 UTC / 22:00 PL).", flush=True)
     while True:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
         minute = now_utc.minute
 
-        # Sesja Dzienna: 05:30 UTC (dokładnie 06:30 czasu polskiego)
+        # Sesja Dzienna: 05:30 UTC (06:30 PL)
         if hour == 5 and minute == 30:
-            run_session("DZIEŃ")
+            run_schema = "DZIEŃ"
+            run_session(run_schema)
             time.sleep(70)
         
-        # Sesja Nocna: 21:00 UTC (dokładnie 22:00 czasu polskiego)
+        # Sesja Nocna: 21:00 UTC (22:00 PL)
         elif hour == 21 and minute == 0:
-            run_session("NOC")
+            run_schema = "NOC"
+            run_session(run_schema)
             time.sleep(70)
 
         time.sleep(30)
 
 def main():
-    print("-> PITOS v6.06 (Japanese Precision) starting...", flush=True)
+    print("-> PITOS v7.0 (Professional Business Engine) starting...", flush=True)
     init_db()
     
-    # Startowy skan testowy przy wdrożeniu
+    # Startowy skan testowy przy wdrożeniu z nowym kluczem
     run_session("NOC (START)")
 
     threading.Thread(target=scheduler_loop, daemon=True).start()
 
     while True:
         time.sleep(3600)
+
+if __name__ ==0:
+    pass
 
 if __name__ == "__main__":
     main()
