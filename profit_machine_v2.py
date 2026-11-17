@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v7.0 — Professional Business Engine (Only AKO3 for Betclic Gra bez podatku + AKO2 for 4j / 100 PLN elite stakes).
+# PITOS v7.0 — Professional Business Engine (Syntax Fixed, Only AKO3 + AKO2 for 4j elite stakes).
 
 import os
 import sys
@@ -43,7 +43,7 @@ def instant_bind():
 threading.Thread(target=instant_bind, daemon=True).start()
 
 # ================= CONFIG =================
-API_KEY = os.getenv("ODDS_API_KEY", "00240e8907e833ed0b94c093c4320525") strip()
+API_KEY = os.getenv("ODDS_API_KEY", "B45b11fc2205b2aec3164b05bb10b397").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
@@ -309,14 +309,12 @@ def scheduler_loop():
 
         # Sesja Dzienna: 05:30 UTC (06:30 PL)
         if hour == 5 and minute == 30:
-            run_schema = "DZIEŃ"
-            run_session(run_schema)
+            run_session("DZIEŃ")
             time.sleep(70)
         
         # Sesja Nocna: 21:00 UTC (22:00 PL)
         elif hour == 21 and minute == 0:
-            run_schema = "NOC"
-            run_session(run_schema)
+            run_session("NOC")
             time.sleep(70)
 
         time.sleep(30)
@@ -332,9 +330,6 @@ def main():
 
     while True:
         time.sleep(3600)
-
-if __name__ ==0:
-    pass
 
 if __name__ == "__main__":
     main()
