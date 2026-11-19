@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PITOS v7.3 Basketball — All available basketball leagues, Only AKO2, Stakes 25 / 50 / 75 PLN.
+# PITOS v7.5 — Multi-sport AKO2 selector, consensus probability, bet ledger.
 
 import os
 import sys
@@ -11,7 +11,6 @@ import sqlite3
 import logging
 import hashlib
 import html
-import random
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 import requests
@@ -32,7 +31,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 23\r\n\r\nPITOS v7.3 Basketball"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 23\r\n\r\nPITOS v7.5 Multi-AKO2"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -45,24 +44,26 @@ def instant_bind():
 threading.Thread(target=instant_bind, daemon=True).start()
 
 # ================= CONFIG =================
-API_KEY = os.getenv("ODDS_API_KEY", "8d07b563bbf9e615506e29af24515838").strip()
+API_KEY = os.getenv("ODDS_API_KEY", "d0fc5228dffea0fe88d6dc2c4c9e10df").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
-SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v73_basket.db")
+SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v75_multi.db")
 
-# Cała dostępna koszykówka (wszystkie aktywne rozgrywki z 'basketball' w kluczu API)
-TARGET_SPORTS_KEYWORDS = ["basketball"]
+# Domyślnie szerszy zestaw płynnych sportów; można nadpisać np. "basketball" lub "basketball,icehockey,soccer,tennis"
+RAW_SPORTS = os.getenv("SPORT_KEYWORDS", "basketball,icehockey,soccer")
+TARGET_SPORTS_KEYWORDS = [k.strip().lower() for k in RAW_SPORTS.split(",") if k.strip()]
 
-# Parametry pod AKO2 i promocję Betclic (każda selekcja min. 1.20; tu bezpieczniej od 1.30)
-MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.30"))
-MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "2.15"))
+# Parametry pod AKO2 i promocję Betclic (każda selekcja min. 1.20)
+MIN_SINGLE_ODDS = float(os.getenv("MIN_SINGLE_ODDS", "1.35"))
+MAX_SINGLE_ODDS = float(os.getenv("MAX_SINGLE_ODDS", "1.95"))
 MIN_TOTAL_ODDS = float(os.getenv("MIN_TOTAL_ODDS", "1.95"))
-MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "3.40"))
+MAX_TOTAL_ODDS = float(os.getenv("MAX_TOTAL_ODDS", "3.10"))
 
-MAX_COUPONS_PER_SESSION = int(os.getenv("MAX_COUPONS_PER_SESSION", "4"))
-UNIT_PLN = 25  # Dopuszczalne stawki: 1j = 25 zł, 2j = 50 zł, 3j = 75 zł
-MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.35"))
+MAX_COUPONS_PER_SESSION = int(os.getenv("MAX_COUPONS_PER_SESSION", "3"))
+UNIT_PLN = 25  # 1j = 25 zł, 2j = 50 zł, 3j = 75 zł
+MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.42"))
+LOOKAHEAD_HOURS = int(os.getenv("LOOKAHEAD_HOURS", "16"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -106,7 +107,20 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v7.3 Basketball DB ready.", flush=True)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bets_history (
+                coupon_id TEXT PRIMARY KEY,
+                session_type TEXT,
+                total_odds REAL,
+                units INTEGER,
+                stake_pln INTEGER,
+                est_prob REAL,
+                result TEXT,
+                pnl_pln REAL,
+                created_at TEXT
+            )
+        """)
+    print("-> PITOS v7.5 DB ready.", flush=True)
 
 
 def api_get(path, params=None):
@@ -152,18 +166,66 @@ def parse_time(val):
         return None
 
 
-def get_basketball_stake(total_odds, min_prob_in_combo):
-    # Zwraca wyłącznie 1j (25 zł), 2j (50 zł) lub 3j (75 zł)
-    if min_prob_in_combo >= 0.56 and total_odds <= 2.45:
+def compute_consensus_selections(bookmakers):
+    """Liczy średni kurs i znormalizowane prawdopodobieństwo po wszystkich dostępnych bukmacherach."""
+    agg_odds = {}
+    book_count = 0
+
+    for bk in bookmakers:
+        h2h = next((m for m in bk.get("markets", []) if m.get("key") == "h2h"), None)
+        if not h2h:
+            continue
+        outcomes = h2h.get("outcomes", [])
+        parsed = []
+        for o in outcomes:
+            name = (o.get("name") or "").strip()
+            try:
+                pr = float(o.get("price"))
+            except Exception:
+                continue
+            if name and math.isfinite(pr) and pr > 1.0:
+                parsed.append((name, pr))
+
+        if len(parsed) < 2:
+            continue
+
+        overround = sum(1.0 / pr for _, pr in parsed)
+        if overround <= 0:
+            continue
+
+        book_count += 1
+        for name, pr in parsed:
+            fair_p = (1.0 / pr) / overround
+            if name not in agg_odds:
+                agg_odds[name] = {"odds_sum": 0.0, "prob_sum": 0.0, "n": 0}
+            agg_odds[name]["odds_sum"] += pr
+            agg_odds[name]["prob_sum"] += fair_p
+            agg_odds[name]["n"] += 1
+
+    if book_count == 0 or not agg_odds:
+        return []
+
+    results = []
+    for name, st in agg_odds.items():
+        if st["n"] > 0:
+            avg_odds = st["odds_sum"] / st["n"]
+            avg_prob = st["prob_sum"] / st["n"]
+            results.append((name, avg_odds, avg_prob, st["n"]))
+    return results
+
+
+def get_stake(total_odds, min_prob_in_combo, combo_prob):
+    # Wyłącznie 1j (25 zł), 2j (50 zł) lub 3j (75 zł)
+    if min_prob_in_combo >= 0.58 and combo_prob >= 0.34 and total_odds <= 2.40:
         return 3, 3 * UNIT_PLN  # 75 zł
-    elif min_prob_in_combo >= 0.44 and total_odds <= 2.95:
+    elif min_prob_in_combo >= 0.48 and combo_prob >= 0.24 and total_odds <= 2.85:
         return 2, 2 * UNIT_PLN  # 50 zł
     else:
         return 1, 1 * UNIT_PLN  # 25 zł
 
 
 def run_session(session_type):
-    print(f"-> Starting full Basketball AKO2 scan for [{session_type}]...", flush=True)
+    print(f"-> Starting v7.5 AKO2 scan ({TARGET_SPORTS_KEYWORDS}) for [{session_type}]...", flush=True)
     sports_data = api_get("/sports/")
     if not sports_data:
         print("-> Failed to fetch sports list or invalid API key.", flush=True)
@@ -177,11 +239,11 @@ def run_session(session_type):
         if any(kw in key for kw in TARGET_SPORTS_KEYWORDS):
             sports.append(key)
 
-    print(f"-> Active basketball leagues count: {len(sports)} -> {sports}", flush=True)
+    print(f"-> Active sports leagues ({len(sports)}): {sports}", flush=True)
 
     candidates = []
     now = datetime.now(timezone.utc)
-    window_end = now + timedelta(hours=16)
+    window_end = now + timedelta(hours=LOOKAHEAD_HOURS)
 
     for sp in sports:
         events = api_get(
@@ -200,60 +262,50 @@ def run_session(session_type):
                 continue
 
             home, away = ev.get("home_team", "Unknown"), ev.get("away_team", "Unknown")
-            bookies = ev.get("bookmakers", [])
-            if not bookies:
+            bookmakers = ev.get("bookmakers", [])
+            if not bookmakers:
                 continue
 
-            bk = bookies[0]
-            h2h = next((m for m in bk.get("markets", []) if m.get("key") == "h2h"), None)
-            if not h2h:
+            consensus = compute_consensus_selections(bookmakers)
+            if not consensus:
                 continue
 
-            prices = []
-            for o in h2h.get("outcomes", []):
-                try:
-                    pr = float(o.get("price"))
-                    if math.isfinite(pr) and pr > 1.0:
-                        prices.append((o.get("name", ""), pr))
-                except Exception:
-                    continue
-
-            if len(prices) < 2:
-                continue
-
-            p_sum = sum(1.0 / pr for _, pr in prices)
-            if p_sum <= 0:
-                continue
-
-            for name, pr in prices:
-                norm_p = (1.0 / pr) / p_sum
-                if MIN_SINGLE_ODDS <= pr <= MAX_SINGLE_ODDS and norm_p >= MIN_PROB:
+            for name, avg_odds, avg_prob, bk_n in consensus:
+                if MIN_SINGLE_ODDS <= avg_odds <= MAX_SINGLE_ODDS and avg_prob >= MIN_PROB:
                     candidates.append({
                         "event_id": ev_id,
                         "event": f"{home} vs {away}",
                         "selection": name,
-                        "odds": pr,
-                        "prob": norm_p,
+                        "odds": avg_odds,
+                        "prob": avg_prob,
+                        "books": bk_n,
                         "sport": sp,
                         "commence": commence,
                     })
 
-    unique_map = {c["event_id"]: c for c in candidates}
-    candidates = list(unique_map.values())
-    print(f"-> Qualified basketball candidates: {len(candidates)}", flush=True)
+    best_per_event = {}
+    for c in candidates:
+        eid = c["event_id"]
+        if eid not in best_per_event or c["prob"] > best_per_event[eid]["prob"]:
+            best_per_event[eid] = c
 
-    if len(candidates) < 2:
+    ranked_candidates = sorted(
+        best_per_event.values(),
+        key=lambda x: (x["prob"], x["books"], -x["odds"]),
+        reverse=True,
+    )
+    print(f"-> Ranked candidates: {len(ranked_candidates)}", flush=True)
+
+    if len(ranked_candidates) < 2:
         telegram_send(
-            f"<b>🏀 PITOS v7.3 Basketball | {session_type}</b>\n"
-            f"📉 Za mało meczów koszykówki spełniających filtry. Pass."
+            f"<b>🎯 PITOS v7.5 AKO2 | {session_type}</b>\n"
+            f"📉 Za mało meczów spełniających filtry. Pass."
         )
         return
 
-    candidates.sort(key=lambda x: (x["prob"], -x["odds"]), reverse=True)
     valid_coupons = []
 
-    # Wyłącznie AKO2 (2 zdarzenia na kuponie)
-    for combo in combinations(candidates, 2):
+    for combo in combinations(ranked_candidates, 2):
         e_ids = [c["event_id"] for c in combo]
         if len(set(e_ids)) != 2:
             continue
@@ -266,15 +318,20 @@ def run_session(session_type):
             if sig in MEM_SIGNATURES:
                 continue
             min_p_in_combo = min(i["prob"] for i in combo)
+            combo_prob = math.prod(i["prob"] for i in combo)
+            ev_score = combo_prob * total_odds
             valid_coupons.append({
                 "combo": combo,
                 "total_odds": total_odds,
                 "signature": sig,
                 "event_ids": e_ids,
                 "min_prob": min_p_in_combo,
+                "combo_prob": combo_prob,
+                "score": (combo_prob, ev_score, min_p_in_combo),
             })
 
-    random.shuffle(valid_coupons)
+    valid_coupons.sort(key=lambda x: x["score"], reverse=True)
+
     sent = 0
     used_in_cycle = set()
 
@@ -286,17 +343,18 @@ def run_session(session_type):
 
         tot = coupon["total_odds"]
         min_p = coupon["min_prob"]
-        units, stake_pln = get_basketball_stake(tot, min_p)
+        c_prob = coupon["combo_prob"]
+        units, stake_pln = get_stake(tot, min_p, c_prob)
 
         lines = [
-            f"<b>🏀 PITOS v7.3 Basketball | AKO2 ({session_type}) #{sent + 1}</b>",
-            "<i>Sprawdź przed zagraniem: dostępność na Betclicu, kontuzje i składy.</i>",
+            f"<b>🎯 PITOS v7.5 AKO2 ({session_type}) #{sent + 1}</b>",
+            f"<i>Szac. trafność AKO2: {c_prob * 100:.1f}% | Sprawdź ofertę Betclic i składy.</i>",
             "",
         ]
         for idx, item in enumerate(coupon["combo"], 1):
             lines.append(
                 f"{idx}. <b>{html.escape(item['event'])}</b>\n"
-                f"   Typ: <i>{html.escape(item['selection'])}</i> | Kurs: <b>{item['odds']:.2f}</b>\n"
+                f"   Typ: <i>{html.escape(item['selection'])}</i> | Śr. kurs: <b>{item['odds']:.2f}</b> ({item['prob']*100:.0f}%, {item['books']} buk.)\n"
                 f"   {html.escape(item['sport'])} | {item['commence'].strftime('%d.%m %H:%M UTC')}"
             )
 
@@ -315,6 +373,10 @@ def run_session(session_type):
                     "INSERT OR IGNORE INTO coupons VALUES (?, ?, ?, 'sent', ?)",
                     (c_id, coupon["signature"], msg, now_str),
                 )
+                conn.execute(
+                    "INSERT OR IGNORE INTO bets_history VALUES (?, ?, ?, ?, ?, ?, 'pending', 0.0, ?)",
+                    (c_id, session_type, round(tot, 2), units, stake_pln, round(c_prob, 4), now_str),
+                )
                 for item in coupon["combo"]:
                     conn.execute(
                         "INSERT OR IGNORE INTO sent_events VALUES (?, ?, ?, ?, 'sent', ?)",
@@ -330,13 +392,13 @@ def run_session(session_type):
 
     if sent == 0:
         telegram_send(
-            f"<b>🏀 PITOS v7.3 Basketball | {session_type}</b>\n"
+            f"<b>🎯 PITOS v7.5 AKO2 | {session_type}</b>\n"
             f"📉 Brak kuponów AKO2 spełniających filtry. Pass."
         )
 
 
 def scheduler_loop():
-    print("-> Harmonogram v7.3 Basketball uruchomiony.", flush=True)
+    print("-> Harmonogram v7.5 uruchomiony.", flush=True)
     while True:
         now_utc = datetime.now(timezone.utc)
         hour = now_utc.hour
@@ -353,10 +415,10 @@ def scheduler_loop():
 
 
 def main():
-    print("-> PITOS v7.3 Basketball starting...", flush=True)
+    print("-> PITOS v7.5 starting with new API key...", flush=True)
     init_db()
     if API_KEY:
-        run_session("START KOSZ")
+        run_session("START v7.5")
     else:
         print("-> Brak klucza API.", flush=True)
 
