@@ -237,8 +237,83 @@ def compute_consensus_with_edge(bookmakers):
 
 def get_ako_stake(legs_count, total_odds, min_prob_in_combo, combo_prob, combo_edge):
     """Stawki wyłącznie 25 / 50 / 75 / 100 zł (1j..4j)."""
-    if legs_count == 2 and min_prob_in_combo >= 0.55 and combo_prob >= 0.30 and combo_edge >= 0.045 and total_odds <= 2.50:
+    if (
+        legs_count == 2
+        and min_prob_in_combo >= 0.55
+        and combo_prob >= 0.30
+        and combo_edge >= 0.045
+        and total_odds <= 2.50
+    ):
         return 4, 4 * UNIT_PLN  # 100 zł
-    elif legs_count == 3 and min_prob_in_combo >= 0.48 and combo_prob >= 0.13 and combo_edge >= 0.05 and total_odds <= 4.00:
+    elif (
+        legs_count == 3
+        and min_prob_in_combo >= 0.48
+        and combo_prob >= 0.13
+        and combo_edge >= 0.05
+        and total_odds <= 4.00
+    ):
         return 3, 3 * UNIT_PLN  # 75 zł
-    elif combo_prob >= 0.18 and combo_edge >=
+    elif combo_prob >= 0.18 and combo_edge >= 0.02:
+        return 2, 2 * UNIT_PLN  # 50 zł
+    else:
+        return 1, 1 * UNIT_PLN  # 25 zł
+
+
+def get_risk_single_stake(odds, prob, edge):
+    """Stawka dla kuponu RISK single: 25 zł (1j) lub 50 zł (2j)."""
+    if prob >= 0.56 and edge >= 0.09 and odds <= 2.00:
+        return 2, 2 * UNIT_PLN  # 50 zł
+    return 1, 1 * UNIT_PLN  # 25 zł
+
+
+def market_pulse_line(prob, edge, odds):
+    """Krótki, konkretny komentarz analityczny do kuponu."""
+    if edge >= 0.07 and prob >= 0.52:
+        return f"Radar: wyraźny rozjazd z konsensusem (+{edge*100:.1f}%), podbicie pod próg zaufania."
+    if odds >= 2.80:
+        return f"Radar: wyższa dźwignia kursowa ({odds:.2f}) — pilnuj stawki i weryfikuj absencje."
+    return f"Radar: stabilny rozkład w koszu/hokeju/tenisie (szansa modelu {prob*100:.1f}%)."
+
+
+def run_session(session_type):
+    now_pl = datetime.now(WARSAW_TZ)
+    print(f"-> PITOS v8.1 scan [{session_type}] at {now_pl.strftime('%Y-%m-%d %H:%M %Z')}...", flush=True)
+
+    sports_data = api_get("/sports/")
+    if not sports_data:
+        print("-> Failed to fetch sports list or invalid API key.", flush=True)
+        return
+
+    sports = []
+    for s in sports_data:
+        key = s.get("key", "").lower()
+        if not s.get("active", True) or "outrights" in key or "winner" in key:
+            continue
+        if any(kw in key for kw in TARGET_SPORTS_KEYWORDS):
+            sports.append(key)
+
+    print(f"-> Active sports ({len(sports)}): {sports}", flush=True)
+
+    candidates = []
+    now_utc = datetime.now(timezone.utc)
+    window_end = now_utc + timedelta(hours=LOOKAHEAD_HOURS)
+
+    for sp in sports:
+        events = api_get(
+            f"/sports/{sp}/odds/",
+            {"regions": "eu,us,uk", "markets": "h2h", "oddsFormat": "decimal"},
+        )
+        if not events:
+            continue
+
+        for ev in events:
+            ev_id = ev.get("id")
+            if not ev_id:
+                continue
+            commence = parse_time(ev.get("commence_time"))
+            if not commence or commence < now_utc or commence > window_end:
+                continue
+
+            home, away = ev.get("home_team", "Unknown"), ev.get("away_team", "Unknown")
+            bookmakers = ev.get("bookmakers", [])
+            if not bookmakers:
