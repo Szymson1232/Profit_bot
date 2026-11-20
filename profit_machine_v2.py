@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# PITOS v8.1 Shark Edition — Basketball, Ice Hockey, Tennis | AKO3 / AKO2 + gated RISK SINGLE
-# Min 3 / Max 10 coupons per session (or clean PASS) | 08:00 & 20:00 PL | Stakes 25 / 50 / 75 / 100 PLN.
+# PITOS v8.2 Shark Edition — Basketball, Ice Hockey, Tennis | AKO3 / AKO2 + gated RISK SINGLE
+# Immediate SESJA 0 on boot | Zero past events | Each match used at most once ever | Auto-settle + session PnL summary.
 
 import os
 import sys
@@ -12,6 +12,7 @@ import sqlite3
 import logging
 import hashlib
 import html
+import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from itertools import combinations
@@ -34,7 +35,7 @@ def instant_bind():
             conn, _ = server.accept()
             try:
                 conn.recv(512)
-                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 22\r\n\r\nPITOS v8.1 Shark Active"
+                response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 22\r\n\r\nPITOS v8.2 Shark Active"
                 conn.sendall(response)
             except Exception:
                 pass
@@ -51,7 +52,7 @@ API_KEY = os.getenv("ODDS_API_KEY", "133d53ed2236d1e09849deabd16155e6").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
-SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v81_shark.db")
+SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v82_shark.db")
 
 # 3 główne dziedziny: koszykówka, hokej, tenis
 TARGET_SPORTS_KEYWORDS = ["basketball", "icehockey", "tennis"]
@@ -81,6 +82,8 @@ UNIT_PLN = 25  # Stawki: 1j = 25 zł, 2j = 50 zł, 3j = 75 zł, 4j = 100 zł
 MIN_PROB = float(os.getenv("MIN_MARKET_PROBABILITY", "0.38"))
 MIN_EDGE = float(os.getenv("MIN_MARKET_EDGE", "0.005"))
 LOOKAHEAD_HOURS = int(os.getenv("LOOKAHEAD_HOURS", "24"))
+FUTURE_BUFFER_MINUTES = int(os.getenv("FUTURE_BUFFER_MINUTES", "5"))
+SETTLE_INTERVAL_SECONDS = int(os.getenv("SETTLE_INTERVAL_SECONDS", "900"))
 
 API_BASE = "https://api.the-odds-api.com/v4"
 TELEGRAM_BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -91,7 +94,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 session = requests.Session()
-MEM_SIGNATURES = set()
 
 
 def get_db():
@@ -105,30 +107,33 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
+        # Każde spotkanie może być użyte TYLKO RAZ w całej historii bota
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS sent_events (
+            CREATE TABLE IF NOT EXISTS used_events (
                 event_id TEXT PRIMARY KEY,
                 sport_key TEXT,
                 event_name TEXT,
+                session_label TEXT,
                 coupon_id TEXT,
-                status TEXT,
                 created_at TEXT
             )
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS coupons (
-                coupon_id TEXT PRIMARY KEY,
-                signature TEXT UNIQUE,
-                message TEXT,
-                status TEXT,
+            CREATE TABLE IF NOT EXISTS sessions_log (
+                session_label TEXT PRIMARY KEY,
+                period_kind TEXT,
+                session_num INTEGER,
+                summary_sent INTEGER DEFAULT 0,
                 created_at TEXT
             )
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS bets_history (
                 coupon_id TEXT PRIMARY KEY,
-                session_type TEXT,
+                session_label TEXT,
+                coupon_idx INTEGER,
                 coupon_kind TEXT,
+                legs_json TEXT,
                 total_odds REAL,
                 units INTEGER,
                 stake_pln INTEGER,
@@ -139,7 +144,39 @@ def init_db():
                 created_at TEXT
             )
         """)
-    print("-> PITOS v8.1 Shark DB ready.", flush=True)
+    print("-> PITOS v8.2 Shark DB ready.", flush=True)
+
+
+def get_used_event_ids():
+    with get_db() as conn:
+        rows = conn.execute("SELECT event_id FROM used_events").fetchall()
+    return {r[0] for r in rows if r and r[0]}
+
+
+def next_session_label(period_kind):
+    """Zwraca etykietę np. SESJA 0, DZIEŃ 1, DZIEŃ 2, NOC 1, NOC 2."""
+    with get_db() as conn:
+        if period_kind == "START":
+            row = conn.execute("SELECT COUNT(*) FROM sessions_log WHERE period_kind = 'START'").fetchone()
+            cnt = int(row[0]) if row else 0
+            label = f"SESJA {cnt}"
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions_log VALUES (?, ?, ?, 0, ?)",
+                (label, period_kind, cnt, datetime.now(timezone.utc).isoformat()),
+            )
+            return label
+
+        row = conn.execute(
+            "SELECT COALESCE(MAX(session_num), 0) FROM sessions_log WHERE period_kind = ?",
+            (period_kind,),
+        ).fetchone()
+        next_num = (int(row[0]) if row else 0) + 1
+        label = f"{period_kind} {next_num}"
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions_log VALUES (?, ?, ?, 0, ?)",
+            (label, period_kind, next_num, datetime.now(timezone.utc).isoformat()),
+        )
+        return label
 
 
 def api_get(path, params=None):
@@ -275,9 +312,10 @@ def market_pulse_line(prob, edge, odds):
     return f"Radar: stabilny rozkład w koszu/hokeju/tenisie (szansa modelu {prob*100:.1f}%)."
 
 
-def run_session(session_type):
+def run_session(period_kind):
+    session_label = next_session_label(period_kind)
     now_pl = datetime.now(WARSAW_TZ)
-    print(f"-> PITOS v8.1 scan [{session_type}] at {now_pl.strftime('%Y-%m-%d %H:%M %Z')}...", flush=True)
+    print(f"-> PITOS v8.2 scan [{session_label}] at {now_pl.strftime('%Y-%m-%d %H:%M %Z')}...", flush=True)
 
     sports_data = api_get("/sports/")
     if not sports_data:
@@ -294,8 +332,10 @@ def run_session(session_type):
 
     print(f"-> Active sports ({len(sports)}): {sports}", flush=True)
 
+    used_ever = get_used_event_ids()
     candidates = []
     now_utc = datetime.now(timezone.utc)
+    earliest_start = now_utc + timedelta(minutes=FUTURE_BUFFER_MINUTES)
     window_end = now_utc + timedelta(hours=LOOKAHEAD_HOURS)
 
     for sp in sports:
@@ -308,10 +348,12 @@ def run_session(session_type):
 
         for ev in events:
             ev_id = ev.get("id")
-            if not ev_id:
+            if not ev_id or ev_id in used_ever:
                 continue
+
             commence = parse_time(ev.get("commence_time"))
-            if not commence or commence < now_utc or commence > window_end:
+            # Sztywne odcięcie przeszłości i meczów już rozpoczętych
+            if not commence or commence <= earliest_start or commence > window_end:
                 continue
 
             home, away = ev.get("home_team", "Unknown"), ev.get("away_team", "Unknown")
@@ -332,6 +374,8 @@ def run_session(session_type):
                     candidates.append({
                         "event_id": ev_id,
                         "event": f"{home} vs {away}",
+                        "home_team": home,
+                        "away_team": away,
                         "selection": name,
                         "odds": odds,
                         "prob": prob,
@@ -358,7 +402,7 @@ def run_session(session_type):
         key=lambda x: (x["edge"], x["prob"], x["books"]),
         reverse=True,
     )
-    print(f"-> Qualified candidates: {len(ranked_candidates)}", flush=True)
+    print(f"-> Fresh future candidates (never used before): {len(ranked_candidates)}", flush=True)
 
     ako_coupons = []
     for r in [2, 3]:
@@ -369,7 +413,7 @@ def run_session(session_type):
 
         for combo in combinations(ranked_candidates, r):
             e_ids = [c["event_id"] for c in combo]
-            if len(set(e_ids)) != r:
+            if len(set(e_ids)) != r or any(eid in used_ever for eid in e_ids):
                 continue
             if any(c["odds"] < 1.20 for c in combo):
                 continue
@@ -377,8 +421,6 @@ def run_session(session_type):
             if min_tot <= total_odds <= max_tot:
                 sig_source = f"AKO{r}|" + "|".join(sorted(f"{i['event_id']}:{i['selection']}" for i in combo))
                 sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-                if sig in MEM_SIGNATURES:
-                    continue
                 min_p_in_combo = min(i["prob"] for i in combo)
                 combo_prob = math.prod(i["prob"] for i in combo)
                 combo_edge = (total_odds * combo_prob) - 1.0
@@ -402,9 +444,9 @@ def run_session(session_type):
 
     ako_coupons.sort(key=lambda x: x["score"], reverse=True)
 
-    # Składamy paczkę z zachowaniem limitu 3..10 kuponów i maks. 1 RISK single
+    # Składamy paczkę: każde spotkanie użyte maksymalnie RAZ w całej paczce i w historii
     selected_coupons = []
-    used_events = set()
+    used_events = set(used_ever)
     risk_used = 0
 
     for c in ako_coupons:
@@ -415,7 +457,6 @@ def run_session(session_type):
         selected_coupons.append(c)
         used_events.update(c["event_ids"])
 
-    # Jeśli w sesji jest miejsce (poniżej 10 kuponów) i mamy mocny sygnał na pojedynczy typ RISK
     if len(selected_coupons) < MAX_COUPONS_PER_SESSION and risk_used < MAX_RISK_SINGLES_PER_SESSION:
         for cand in ranked_candidates:
             if cand["event_id"] in used_events:
@@ -427,8 +468,6 @@ def run_session(session_type):
             ):
                 sig_source = f"RISK_SINGLE|{cand['event_id']}:{cand['selection']}"
                 sig = hashlib.sha256(sig_source.encode("utf-8")).hexdigest()
-                if sig in MEM_SIGNATURES:
-                    continue
                 units, stake_pln = get_risk_single_stake(cand["odds"], cand["prob"], cand["edge"])
                 selected_coupons.append({
                     "legs_count": 1,
@@ -448,10 +487,12 @@ def run_session(session_type):
                 risk_used += 1
                 break
 
-    # Twarda reguła: minimum 3 kupony w sesji, w przeciwnym razie PASS
+    # Minimum 3 kupony w sesji, w przeciwnym razie PASS
     if len(selected_coupons) < MIN_COUPONS_PER_SESSION:
-        print(f"-> Found only {len(selected_coupons)} coupons (min {MIN_COUPONS_PER_SESSION}). Sending PASS.", flush=True)
-        telegram_send("PASS — brak wystarczającej liczby solidnych układów w koszu, hokeju i tenisie.")
+        print(f"-> [{session_label}] Found only {len(selected_coupons)} coupons (min {MIN_COUPONS_PER_SESSION}). Sending PASS.", flush=True)
+        with get_db() as conn:
+            conn.execute("UPDATE sessions_log SET summary_sent = 1 WHERE session_label = ?", (session_label,))
+        telegram_send(f"<b>{html.escape(session_label)}</b> — PASS (brak min. 3 czystych układów).")
         return
 
     for idx_c, coupon in enumerate(selected_coupons[:MAX_COUPONS_PER_SESSION], 1):
@@ -461,10 +502,21 @@ def run_session(session_type):
         units = coupon["units"]
         stake_pln = coupon["stake_pln"]
         tag = "RISK SINGLE" if coupon["kind"] == "RISK_SINGLE" else coupon["kind"]
+        c_id = f"{session_label}_{idx_c}_{coupon['signature'][:12]}"
 
-        lines = [f"<b>#{idx_c} | {html.escape(tag)}</b>", ""]
+        legs_payload = []
+        lines = [f"<b>{html.escape(session_label)} | #{idx_c} | {html.escape(tag)}</b>", ""]
         for leg_i, item in enumerate(coupon["combo"], 1):
             start_pl = item["commence"].astimezone(WARSAW_TZ).strftime("%d.%m %H:%M")
+            legs_payload.append({
+                "event_id": item["event_id"],
+                "sport": item["sport"],
+                "event": item["event"],
+                "home_team": item["home_team"],
+                "away_team": item["away_team"],
+                "selection": item["selection"],
+                "odds": round(item["odds"], 2),
+            })
             lines.append(
                 f"{leg_i}. <b>{html.escape(item['event'])}</b> ({html.escape(item['sport'])}, {start_pl})\n"
                 f"Typ: <b>{html.escape(item['selection'])}</b> @ <b>{item['odds']:.2f}</b> "
@@ -478,34 +530,193 @@ def run_session(session_type):
         ])
 
         msg = "\n".join(lines)
-        c_id = coupon["signature"][:24]
 
         try:
             with get_db() as conn:
                 now_str = datetime.now(timezone.utc).isoformat()
                 conn.execute(
-                    "INSERT OR IGNORE INTO coupons VALUES (?, ?, ?, 'sent', ?)",
-                    (c_id, coupon["signature"], msg, now_str),
-                )
-                conn.execute(
-                    "INSERT OR IGNORE INTO bets_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0.0, ?)",
-                    (c_id, session_type, coupon["kind"], round(tot, 2), units, stake_pln, round(c_prob, 4), round(c_edge, 4), now_str),
+                    "INSERT OR IGNORE INTO bets_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0.0, ?)",
+                    (
+                        c_id,
+                        session_label,
+                        idx_c,
+                        coupon["kind"],
+                        json.dumps(legs_payload, ensure_ascii=False),
+                        round(tot, 2),
+                        units,
+                        stake_pln,
+                        round(c_prob, 4),
+                        round(c_edge, 4),
+                        now_str,
+                    ),
                 )
                 for item in coupon["combo"]:
                     conn.execute(
-                        "INSERT OR IGNORE INTO sent_events VALUES (?, ?, ?, ?, 'sent', ?)",
-                        (item["event_id"], item["sport"], item["event"], c_id, now_str),
+                        "INSERT OR IGNORE INTO used_events VALUES (?, ?, ?, ?, ?, ?)",
+                        (item["event_id"], item["sport"], item["event"], session_label, c_id, now_str),
                     )
 
             telegram_send(msg)
-            MEM_SIGNATURES.add(coupon["signature"])
         except Exception as e:
             print(f"-> Send error: {e}", flush=True)
 
 
+def determine_winner_from_score(ev_obj):
+    """Zwraca nazwę zwycięzcy, jeśli mecz jest oznaczony jako completed i ma dwa różne wyniki."""
+    if not ev_obj.get("completed"):
+        return None
+    scores = ev_obj.get("scores")
+    if not isinstance(scores, list) or len(scores) < 2:
+        return None
+    parsed = []
+    for sc in scores:
+        name = (sc.get("name") or "").strip()
+        val_str = sc.get("score")
+        if not name or val_str is None:
+            return None
+        try:
+            pts = float(val_str)
+        except Exception:
+            return None
+        parsed.append((name, pts))
+    if len(parsed) < 2 or parsed[0][1] == parsed[1][1]:
+        return None
+    winner = max(parsed, key=lambda x: x[1])[0]
+    return winner
+
+
+def settle_pending_bets_and_report():
+    """Sprawdza zakończone mecze, rozlicza kupony i wysyła podsumowanie sesji po jej pełnym rozliczeniu."""
+    with get_db() as conn:
+        pending_rows = conn.execute(
+            "SELECT coupon_id, session_label, coupon_idx, coupon_kind, legs_json, total_odds, stake_pln "
+            "FROM bets_history WHERE result = 'pending'"
+        ).fetchall()
+
+    if not pending_rows:
+        return
+
+    needed_sports = set()
+    parsed_bets = []
+    for r in pending_rows:
+        c_id, s_label, c_idx, c_kind, legs_json, tot_odds, stake_pln = r
+        try:
+            legs = json.loads(legs_json)
+        except Exception:
+            continue
+        for lg in legs:
+            if lg.get("sport"):
+                needed_sports.add(lg["sport"])
+        parsed_bets.append({
+            "coupon_id": c_id,
+            "session_label": s_label,
+            "coupon_idx": c_idx,
+            "coupon_kind": c_kind,
+            "legs": legs,
+            "total_odds": float(tot_odds),
+            "stake_pln": int(stake_pln),
+        })
+
+    winners_by_event = {}
+    for sp in needed_sports:
+        scores_data = api_get(f"/sports/{sp}/scores/", {"daysFrom": "2"})
+        if not isinstance(scores_data, list):
+            continue
+        for ev_obj in scores_data:
+            ev_id = ev_obj.get("id")
+            if not ev_id:
+                continue
+            win_name = determine_winner_from_score(ev_obj)
+            if win_name:
+                winners_by_event[ev_id] = win_name
+
+    newly_settled_sessions = set()
+    for b in parsed_bets:
+        legs = b["legs"]
+        if not legs:
+            continue
+        all_known = True
+        all_won = True
+        for lg in legs:
+            eid = lg.get("event_id")
+            sel = (lg.get("selection") or "").strip()
+            if eid not in winners_by_event:
+                all_known = False
+                break
+            if winners_by_event[eid].lower() != sel.lower():
+                all_won = False
+
+        if not all_known:
+            continue
+
+        stake = b["stake_pln"]
+        tot_odds = b["total_odds"]
+        if all_won:
+            res_tag = "won"
+            pnl = round((stake * tot_odds) - stake, 2)
+        else:
+            res_tag = "lost"
+            pnl = round(-float(stake), 2)
+
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE bets_history SET result = ?, pnl_pln = ? WHERE coupon_id = ?",
+                (res_tag, pnl, b["coupon_id"]),
+            )
+        newly_settled_sessions.add(b["session_label"])
+
+    # Sprawdzamy sesje, które mają już 0 nierozliczonych kuponów i nie wysłały jeszcze podsumowania
+    with get_db() as conn:
+        cand_sessions = conn.execute(
+            "SELECT session_label FROM sessions_log WHERE summary_sent = 0"
+        ).fetchall()
+
+    for (s_label,) in cand_sessions:
+        with get_db() as conn:
+            rem = conn.execute(
+                "SELECT COUNT(*) FROM bets_history WHERE session_label = ? AND result = 'pending'",
+                (s_label,),
+            ).fetchone()[0]
+            rows = conn.execute(
+                "SELECT coupon_idx, coupon_kind, total_odds, stake_pln, result, pnl_pln "
+                "FROM bets_history WHERE session_label = ? ORDER BY coupon_idx ASC",
+                (s_label,),
+            ).fetchall()
+
+        if not rows or rem > 0:
+            continue
+
+        total_pnl = sum(float(x[5]) for x in rows)
+        lines = [f"<b>Podsumowanie sesji: {html.escape(s_label)}</b>", ""]
+        for c_idx, c_kind, tot_odds, stake_pln, res_tag, pnl in rows:
+            icon = "✅" if res_tag == "won" else "❌"
+            sign = "+" if float(pnl) >= 0 else ""
+            lines.append(
+                f"{icon} #{c_idx} ({html.escape(c_kind)}) @{tot_odds:.2f} | {stake_pln} zł -> <b>{sign}{float(pnl):.0f} zł</b>"
+            )
+
+        tot_sign = "+" if total_pnl >= 0 else ""
+        lines.extend([
+            "",
+            f"Bilans sesji ({html.escape(s_label)}): <b>{tot_sign}{total_pnl:.0f} zł</b>",
+        ])
+
+        try:
+            telegram_send("\n".join(lines))
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE sessions_log SET summary_sent = 1 WHERE session_label = ?",
+                    (s_label,),
+                )
+        except Exception as e:
+            print(f"-> Session summary error [{s_label}]: {e}", flush=True)
+
+
 def scheduler_loop():
-    print("-> Harmonogram v8.1 uruchomiony (08:00 DZIEŃ PL / 20:00 NOC PL).", flush=True)
+    print("-> Harmonogram v8.2 uruchomiony (08:00 DZIEŃ PL / 20:00 NOC PL + auto-rozliczanie).", flush=True)
     last_run_slot = None
+    last_settle_ts = 0.0
+
     while True:
         now_pl = datetime.now(WARSAW_TZ)
         slot_key = now_pl.strftime("%Y-%m-%d %H:%M")
@@ -519,12 +730,22 @@ def scheduler_loop():
             run_session("NOC")
             time.sleep(35)
 
+        now_ts = time.time()
+        if now_ts - last_settle_ts >= SETTLE_INTERVAL_SECONDS:
+            last_settle_ts = now_ts
+            try:
+                settle_pending_bets_and_report()
+            except Exception as e:
+                print(f"-> Settle loop error: {e}", flush=True)
+
         time.sleep(20)
 
 
 def main():
-    print("-> PITOS v8.1 Shark Edition starting...", flush=True)
+    print("-> PITOS v8.2 Shark Edition starting...", flush=True)
     init_db()
+    if API_KEY:
+        run_session("START")
     threading.Thread(target=scheduler_loop, daemon=True).start()
 
     while True:
