@@ -27,10 +27,10 @@ TZ = ZoneInfo(TZ_NAME)
 # Wyjątkowo na start wysyła paczkę na nockę (bo 20:00 już minęła), potem działa według harmonogramu 08:00 / 20:00
 START_NIGHT_NOW = os.getenv("START_NIGHT_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
 
-# Widełki pod AKO2 i Betclic (25 / 50 / 75 PLN)
+# Widełki pod AKO2 i Betclic (25 / 50 / 75 PLN) — minimum 1.20 na nogę pod grę bez podatku
 AKO_MIN = float(os.getenv("AKO_MIN", "1.85"))
 AKO_MAX = float(os.getenv("AKO_MAX", "3.60"))
-MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.12"))
+MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.20"))
 MAX_LEG_ODDS = float(os.getenv("MAX_LEG_ODDS", "3.80"))
 MAX_COUPONS = int(os.getenv("MAX_COUPONS_PER_RUN", "5"))
 
@@ -72,7 +72,6 @@ def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, dat
             end = start + timedelta(hours=4)
         return start, end
 
-    # session == "night"
     start = now_local
     tomorrow = today + timedelta(days=1)
     end = datetime.combine(tomorrow, time(8, 30), tzinfo=TZ)
@@ -233,6 +232,8 @@ def build_ako2_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPO
     for leg_a, leg_b in combinations(ranked_picks, 2):
         if len(coupons) >= max_coupons:
             return coupons
+        if leg_a["odds"] < MIN_LEG_ODDS or leg_b["odds"] < MIN_LEG_ODDS:
+            continue
         if leg_a["event_id"] in used_events or leg_b["event_id"] in used_events:
             continue
 
@@ -259,6 +260,8 @@ def build_ako2_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPO
     for leg_a, leg_b in combinations(ranked_picks, 2):
         if len(coupons) >= max_coupons:
             break
+        if leg_a["odds"] < MIN_LEG_ODDS or leg_b["odds"] < MIN_LEG_ODDS:
+            continue
         if leg_a["event_id"] == leg_b["event_id"]:
             continue
 
@@ -300,12 +303,12 @@ def format_telegram_message(
     header = (
         f"🔥🏀🏒🎾 *PACZKA AKO2 — {title_label}*\n"
         f"🕒 Okno: `{window_start.strftime('%d.%m %H:%M')}` – `{window_end.strftime('%d.%m %H:%M')}` ({TZ_NAME})\n"
-        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN` (Betclic)\n"
+        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs nogi: `{MIN_LEG_ODDS:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN` (Betclic)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if not coupons:
-        return header + f"⚠️ Brak par AKO2 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` w tym oknie."
+        return header + f"⚠️ Brak par AKO2 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` (min. `{MIN_LEG_ODDS:.2f}`/noga) w tym oknie."
 
     total_stake = sum(c["stake_pln"] for c in coupons)
     blocks = [header]
@@ -382,7 +385,6 @@ def run_session(session: str, is_startup_catchup: bool = False) -> None:
 
 
 def main() -> None:
-    # 1. Wyjątkowy zrzut paczki na nockę na start (bo 20:00 już minęła)
     if START_NIGHT_NOW:
         logger.info("Wyjątkowy zrzut paczki na nockę na start...")
         try:
@@ -390,7 +392,6 @@ def main() -> None:
         except Exception as exc:
             logger.exception("Błąd przy zrzucie startowym na nockę: %s", exc)
 
-    # 2. Harmonogram: 08:00 mecze dzienne | 20:00 nocka (czas polski Europe/Warsaw)
     schedule_map = {
         (8, 0): "day",
         (20, 0): "night",
