@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # PITOS v8.3 Shark Edition — Basketball, Ice Hockey, Tennis | AKO3 / AKO2 + gated RISK SINGLE
-# Sessions DZIEŃ 1 (08:00 PL) & NOC 1 (20:00 PL) | Strict no-repeat per match | Auto-settle + session PnL summary.
+# Immediate DZIEŃ 1 on boot (when past 08:00) + NOC 1 at 20:00 PL | Strict no-repeat per match | Auto-settle + session PnL summary.
 
 import os
 import re
@@ -55,6 +55,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 SQLITE_PATH = os.getenv("SQLITE_PATH", "pitos_v83_shark.db")
+
+# Domyślnie odpala DZIEŃ 1 od razu na starcie; można wyłączyć ustawiając FORCE_RUN_ON_START=0
+FORCE_RUN_ON_START = os.getenv("FORCE_RUN_ON_START", "1").strip().lower() in ("1", "true", "yes", "on")
 
 # 3 główne dziedziny: koszykówka, hokej, tenis
 TARGET_SPORTS_KEYWORDS = ["basketball", "icehockey", "tennis"]
@@ -178,7 +181,7 @@ def get_used_event_and_match_keys():
 
 
 def next_session_label(period_kind):
-    """Zwraca etykietę np. DZIEŃ 1, DZIEŃ 2, NOC 1, NOC 2 (nigdy DZIEŃ 0 / SESJA 0)."""
+    """Zwraca etykietę np. DZIEŃ 1, DZIEŃ 2, NOC 1, NOC 2."""
     with get_db() as conn:
         row = conn.execute(
             "SELECT COALESCE(MAX(session_num), 0) FROM sessions_log WHERE period_kind = ?",
@@ -798,6 +801,8 @@ def scheduler_loop():
 def main():
     print("-> PITOS v8.3 Shark Edition starting...", flush=True)
     init_db()
+    if FORCE_RUN_ON_START and API_KEY:
+        run_session("DZIEŃ")
     threading.Thread(target=scheduler_loop, daemon=True).start()
 
     while True:
