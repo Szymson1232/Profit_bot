@@ -2,6 +2,7 @@ import os
 import logging
 from datetime import datetime, timedelta, time
 from itertools import combinations
+from statistics import mean
 from typing import List, Dict, Any, Tuple
 from zoneinfo import ZoneInfo
 
@@ -11,22 +12,26 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
-logger = logging.getLogger("PITOS_AKO2")
+logger = logging.getLogger("PITOS_SOBOTA")
 
-ODDS_API_KEY = os.getenv("ODDS_API_KEY", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+# Dane z wcześniejszych rozmów (możesz nadpisać zmiennymi środowiskowymi)
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "133d53ed2236d1e09849deabd16155e6").strip()
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
+).strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 TZ_NAME = os.getenv("TIMEZONE", "Europe/Warsaw")
 TZ = ZoneInfo(TZ_NAME)
 
-# Parametry pod AKO2 i Betclic (25 / 50 / 75 PLN)
-AKO_MIN = float(os.getenv("AKO_MIN", "1.95"))
-AKO_MAX = float(os.getenv("AKO_MAX", "3.40"))
-MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.25"))
-MAX_LEG_ODDS = float(os.getenv("MAX_LEG_ODDS", "2.60"))
-MAX_COUPONS = int(os.getenv("MAX_COUPONS_PER_RUN", "3"))
+# Poluzowane widełki pod sobotnią ofertę i budowanie paczki AKO2
+AKO_MIN = float(os.getenv("AKO_MIN", "1.85"))
+AKO_MAX = float(os.getenv("AKO_MAX", "3.60"))
+MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.12"))
+MAX_LEG_ODDS = float(os.getenv("MAX_LEG_ODDS", "3.80"))
+MAX_COUPONS = int(os.getenv("MAX_COUPONS_PER_RUN", "5"))
 
+# Stawki w PLN pod Betclic (bez podatku)
 STAKE_LOW = int(os.getenv("STAKE_LOW", "25"))
 STAKE_MID = int(os.getenv("STAKE_MID", "50"))
 STAKE_HIGH = int(os.getenv("STAKE_HIGH", "75"))
@@ -37,56 +42,70 @@ TARGET_GROUPS = {
     "tennis": "Tenis",
 }
 
+# Twarda blokada NBA, NHL i pokrewnych rozgrywek w sesji dziennej
+BLOCKED_KEYWORDS = (
+    "nba",
+    "wnba",
+    "nhl",
+    "ahl",
+    "ncaab",
+    "ncaaf",
+    "g_league",
+    "gleague",
+)
+
 BASE_URL = "https://api.the-odds-api.com/v4"
 
 
+def is_forbidden_day_league(sport_key: str, sport_title: str, commence_local: datetime) -> bool:
+    """Blokuje NBA/NHL/itp. oraz nocne okienka północnoamerykańskie w sesji dziennej."""
+    text = f"{sport_key} {sport_title}".lower()
+    if any(bad in text for bad in BLOCKED_KEYWORDS):
+        return True
+    if any(tag in text for tag in ("usa", "north america", "canada")) and commence_local.hour >= 16:
+        return True
+    return False
+
+
 def fetch_all_target_sports() -> List[Dict[str, Any]]:
-    """Pobiera wszystkie aktywne rozgrywki dla koszykówki, hokeja i tenisa (pełna oferta)."""
+    """Pobiera wszystkie aktywne rozgrywki dla koszykówki, hokeja i tenisa (bez NBA i NHL)."""
     url = f"{BASE_URL}/sports"
     params = {"apiKey": ODDS_API_KEY, "all": "false"}
     resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
     sports = resp.json()
 
-    matched = []
+    matched: List[Dict[str, Any]] = []
     for s in sports:
         group = (s.get("group") or "").lower()
         key = (s.get("key") or "").lower()
-        if any(grp in group or key.startswith(grp) for grp in TARGET_GROUPS):
-            matched.append(s)
+        title = (s.get("title") or "").lower()
 
-    logger.info("Znaleziono %d aktywnych rozgrywek (kosz / hokej / tenis).", len(matched))
+        if not any(grp in group or key.startswith(grp) for grp in TARGET_GROUPS):
+            continue
+        if any(bad in f"{key} {title}" for bad in BLOCKED_KEYWORDS):
+            continue
+        matched.append(s)
+
+    logger.info("Aktywne ligi/turnieje (bez NBA/NHL): %d", len(matched))
     return matched
 
 
 def get_day_session_window(now_local: datetime) -> Tuple[datetime, datetime]:
-    """
-    Okno sesji dziennej: od teraz do 19:00 lokalnego czasu (lub bezpiecznego limitu wieczornego),
-    żeby łapać mecze dzienne, a nie nocne NHL/NBA z Ameryki Północnej.
-    """
+    """Okno sesji dziennej: od teraz do 21:30 czasu lokalnego."""
     today = now_local.date()
     start = now_local
-    end = datetime.combine(today, time(19, 0), tzinfo=TZ)
-
+    end = datetime.combine(today, time(21, 30), tzinfo=TZ)
     if end <= start:
         end = min(
-            now_local + timedelta(hours=2, minutes=30),
-            datetime.combine(today, time(20, 30), tzinfo=TZ),
+            now_local + timedelta(hours=3),
+            datetime.combine(today, time(22, 30), tzinfo=TZ),
         )
     return start, end
 
 
-def is_night_na_event(sport_key: str, sport_title: str, commence_local: datetime) -> bool:
-    """Blokuje typowo nocne rozgrywki z Ameryki Północnej w sesji dziennej."""
-    combined = f"{sport_key} {sport_title}".lower()
-    na_markers = ("nhl", "ahl", "nba", "wnba", "ncaab", "ncaaf")
-    if any(m in combined for m in na_markers) and commence_local.hour >= 17:
-        return True
-    return False
-
-
 def fetch_events_for_sport(sport_key: str) -> List[Dict[str, Any]]:
-    """Pobiera mecze i kursy h2h dla wybranej ligi/turnieju."""
+    """Pobiera mecze i kursy h2h dla wskazanej ligi/turnieju."""
     url = f"{BASE_URL}/sports/{sport_key}/odds"
     params = {
         "apiKey": ODDS_API_KEY,
@@ -101,11 +120,25 @@ def fetch_events_for_sport(sport_key: str) -> List[Dict[str, Any]]:
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
-        logger.warning("Błąd pobierania kursów dla %s: %s", sport_key, exc)
+        logger.warning("Błąd dla %s: %s", sport_key, exc)
         return []
 
 
-def extract_day_picks(
+def compute_quality_score(best_odds: float, all_odds: List[float]) -> float:
+    """
+    Liczy wynik jakości picku:
+    - premiuje wyższy kurs niż średnia rynkowa (przewaga nad konsensusem buków),
+    - premiuje rozsądne prawdopodobieństwo bazowe (żeby nie grać samych loterii po 3.70).
+    """
+    avg_odds = mean(all_odds) if all_odds else best_odds
+    edge_ratio = (best_odds / avg_odds) if avg_odds > 0 else 1.0
+    implied_prob = 1.0 / best_odds if best_odds > 0 else 0.0
+    # Balans między przewagą kursową a realną szansą wejścia
+    score = (edge_ratio * 100.0) + (implied_prob * 35.0)
+    return round(score, 2)
+
+
+def extract_quality_picks(
     events: List[Dict[str, Any]],
     sport_key: str,
     sport_title: str,
@@ -113,7 +146,7 @@ def extract_day_picks(
     window_start: datetime,
     window_end: datetime,
 ) -> List[Dict[str, Any]]:
-    """Wyciąga typy 1/2 z okna dziennego w zadanych widełkach kursowych."""
+    """Zbiera quality picki z okna dziennego (bez NBA/NHL)."""
     picks: List[Dict[str, Any]] = []
 
     for ev in events:
@@ -125,7 +158,7 @@ def extract_day_picks(
         if not (window_start <= commence_local <= window_end):
             continue
 
-        if is_night_na_event(sport_key, sport_title, commence_local):
+        if is_forbidden_day_league(sport_key, sport_title, commence_local):
             continue
 
         home = ev.get("home_team")
@@ -133,7 +166,8 @@ def extract_day_picks(
         if not home or not away:
             continue
 
-        best_odds: Dict[str, Tuple[float, str]] = {}
+        odds_by_side: Dict[str, List[Tuple[float, str]]] = {home: [], away: []}
+
         for bm in ev.get("bookmakers", []):
             bm_title = bm.get("title", "Bookmaker")
             for mkt in bm.get("markets", []):
@@ -142,14 +176,18 @@ def extract_day_picks(
                 for out in mkt.get("outcomes", []):
                     name = out.get("name")
                     price = out.get("price")
-                    if name not in (home, away) or not isinstance(price, (int, float)):
-                        continue
-                    price = float(price)
-                    if MIN_LEG_ODDS <= price <= MAX_LEG_ODDS:
-                        if name not in best_odds or price > best_odds[name][0]:
-                            best_odds[name] = (price, bm_title)
+                    if name in odds_by_side and isinstance(price, (int, float)):
+                        price_f = float(price)
+                        if MIN_LEG_ODDS <= price_f <= MAX_LEG_ODDS:
+                            odds_by_side[name].append((price_f, bm_title))
 
-        for selection, (price, bm_title) in best_odds.items():
+        for selection, entries in odds_by_side.items():
+            if not entries:
+                continue
+            best_price, best_bm = max(entries, key=lambda x: x[0])
+            all_prices = [p for p, _ in entries]
+            q_score = compute_quality_score(best_price, all_prices)
+
             picks.append(
                 {
                     "event_id": ev.get("id"),
@@ -159,99 +197,140 @@ def extract_day_picks(
                     "home": home,
                     "away": away,
                     "selection": selection,
-                    "odds": round(price, 2),
-                    "bookmaker": bm_title,
+                    "odds": round(best_price, 2),
+                    "avg_odds": round(mean(all_prices), 2),
+                    "bookmaker": best_bm,
                     "commence_local": commence_local,
+                    "quality_score": q_score,
                 }
             )
 
     return picks
 
 
-def choose_stake_pln(ako: float) -> int:
-    """Dobiera stawkę 25 / 50 / 75 PLN pod kurs AKO2 (1.95 - 3.40)."""
-    if ako <= 2.35:
-        return STAKE_HIGH  # 75 PLN — niższe AKO, wyższa pewność
-    if ako <= 2.85:
-        return STAKE_MID   # 50 PLN — środek stawki
-    return STAKE_LOW       # 25 PLN — wyższe AKO w widełkach
+def choose_stake_pln(ako: float, avg_quality: float) -> int:
+    """Dobiera stawkę 25 / 50 / 75 PLN pod kurs AKO2 i jakość par."""
+    if ako <= 2.35 and avg_quality >= 115.0:
+        return STAKE_HIGH  # 75 PLN
+    if ako <= 2.95:
+        return STAKE_MID   # 50 PLN
+    return STAKE_LOW       # 25 PLN
 
 
 def build_ako2_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPONS) -> List[Dict[str, Any]]:
-    """Buduje kupony AKO2 z różnych meczów w widełkach AKO_MIN..AKO_MAX (1.95 - 3.40)."""
-    by_event: Dict[str, Dict[str, Any]] = {}
-    for p in sorted(picks, key=lambda x: x["odds"], reverse=True):
+    """
+    Buduje kupony AKO2 z najlepszych quality picków:
+    1) najpierw unikalne mecze,
+    2) potem dociąga kolejne pary z puli, żeby nie ucinać paczki na 1 kuponie.
+    """
+    # Bierzemy najwyższy quality_score dla każdego meczu
+    best_per_event: Dict[str, Dict[str, Any]] = {}
+    for p in sorted(picks, key=lambda x: x["quality_score"], reverse=True):
         eid = p["event_id"]
-        if eid not in by_event:
-            by_event[eid] = p
+        if eid not in best_per_event:
+            best_per_event[eid] = p
 
-    unique_picks = list(by_event.values())
+    ranked_picks = sorted(best_per_event.values(), key=lambda x: x["quality_score"], reverse=True)
     coupons: List[Dict[str, Any]] = []
     used_events = set()
+    seen_pairs = set()
 
-    for leg_a, leg_b in combinations(unique_picks, 2):
+    # Etap 1: osobne mecze dla każdego kuponu
+    for leg_a, leg_b in combinations(ranked_picks, 2):
         if len(coupons) >= max_coupons:
-            break
+            return coupons
         if leg_a["event_id"] in used_events or leg_b["event_id"] in used_events:
             continue
 
         ako = round(leg_a["odds"] * leg_b["odds"], 2)
         if AKO_MIN <= ako <= AKO_MAX:
-            stake_pln = choose_stake_pln(ako)
-            potential_return = round(stake_pln * ako, 2)  # Betclic bez podatku (x1.0)
+            pair_key = tuple(
+                sorted([f"{leg_a['event_id']}:{leg_a['selection']}", f"{leg_b['event_id']}:{leg_b['selection']}"])
+            )
+            seen_pairs.add(pair_key)
+            avg_q = (leg_a["quality_score"] + leg_b["quality_score"]) / 2.0
+            stake_pln = choose_stake_pln(ako, avg_q)
             coupons.append(
                 {
                     "legs": [leg_a, leg_b],
                     "ako": ako,
                     "stake_pln": stake_pln,
-                    "potential_return": potential_return,
+                    "potential_return": round(stake_pln * ako, 2),
+                    "quality": round(avg_q, 1),
                 }
             )
             used_events.add(leg_a["event_id"])
             used_events.add(leg_b["event_id"])
 
+    # Etap 2: dociąganie brakujących kuponów z pozostałych par
+    for leg_a, leg_b in combinations(ranked_picks, 2):
+        if len(coupons) >= max_coupons:
+            break
+        if leg_a["event_id"] == leg_b["event_id"]:
+            continue
+
+        pair_key = tuple(
+            sorted([f"{leg_a['event_id']}:{leg_a['selection']}", f"{leg_b['event_id']}:{leg_b['selection']}"])
+        )
+        if pair_key in seen_pairs:
+            continue
+
+        ako = round(leg_a["odds"] * leg_b["odds"], 2)
+        if AKO_MIN <= ako <= AKO_MAX:
+            seen_pairs.add(pair_key)
+            avg_q = (leg_a["quality_score"] + leg_b["quality_score"]) / 2.0
+            stake_pln = choose_stake_pln(ako, avg_q)
+            coupons.append(
+                {
+                    "legs": [leg_a, leg_b],
+                    "ako": ako,
+                    "stake_pln": stake_pln,
+                    "potential_return": round(stake_pln * ako, 2),
+                    "quality": round(avg_q, 1),
+                }
+            )
+
     return coupons
 
 
 def format_telegram_message(window_start: datetime, window_end: datetime, coupons: List[Dict[str, Any]]) -> str:
-    """Formatuje kupony AKO2 na Telegram z godziną, ligą, typem i stawką w PLN."""
+    """Formatuje sobotnie kupony AKO2 na Telegram."""
     header = (
-        f"🏀🏒🎾 *KUPONY AKO2 — SESJA DZIENNA*\n"
-        f"🕒 Okno: `{window_start.strftime('%H:%M')}` – `{window_end.strftime('%H:%M')}` ({TZ_NAME})\n"
-        f"🎯 Zakres AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN` (Betclic)\n"
+        f"🔥🏀🏒🎾 *SOBOTNIA PACZKA AKO2 (BEZ NBA/NHL)*\n"
+        f"🕒 Okno dzienne: `{window_start.strftime('%H:%M')}` – `{window_end.strftime('%H:%M')}` ({TZ_NAME})\n"
+        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN` (Betclic)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if not coupons:
         return (
             header
-            + f"⚠️ Brak par AKO2 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` dla aktualnego okna dziennego."
+            + f"⚠️ Brak par AKO2 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` w bieżącym oknie dziennym."
         )
 
+    total_stake = sum(c["stake_pln"] for c in coupons)
     blocks = [header]
+
     for idx, c in enumerate(coupons, start=1):
         lines = [
             f"*KUPON #{idx} (AKO2)* | Kurs: *{c['ako']:.2f}* | Stawka: *{c['stake_pln']} PLN* "
-            f"(Do wyjęcia: *{c['potential_return']:.2f} PLN*)"
+            f"| Wygrana: *{c['potential_return']:.2f} PLN* | Q: `{c['quality']}`"
         ]
         for leg in c["legs"]:
             godz = leg["commence_local"].strftime("%H:%M")
             lines.append(
                 f"• [{leg['group_label']}] *{leg['sport_title']}* — `{godz}`\n"
                 f"  `{leg['home']} vs {leg['away']}`\n"
-                f"  Typ: *{leg['selection']}* @ *{leg['odds']:.2f}* ({leg['bookmaker']})"
+                f"  Typ: *{leg['selection']}* @ *{leg['odds']:.2f}* (śr. rynku `{leg['avg_odds']:.2f}`, {leg['bookmaker']})"
             )
         blocks.append("\n".join(lines))
 
+    blocks.append(f"━━━━━━━━━━━━━━━━━━━━\n💰 Łączna ekspozycja paczki: *{total_stake} PLN*")
     return "\n\n".join(blocks)
 
 
 def send_telegram(text: str) -> None:
-    """Wysyła gotową paczkę kuponów na Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.info("Brak TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — drukuję wiadomość:\n%s", text)
-        return
-
+    """Wysyła wiadomość na Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -261,17 +340,14 @@ def send_telegram(text: str) -> None:
     }
     resp = requests.post(url, json=payload, timeout=20)
     resp.raise_for_status()
-    logger.info("Wysłano kupony AKO2 na Telegram.")
+    logger.info("Wysłano paczkę kuponów AKO2 na Telegram (chat_id=%s).", TELEGRAM_CHAT_ID)
 
 
-def run_day_now() -> None:
-    """Natychmiastowy przegląd pełnej oferty dziennej (kosz/hokej/tenis) i wysyłka kuponów AKO2."""
-    if not ODDS_API_KEY:
-        raise RuntimeError("Brak zmiennej środowiskowej ODDS_API_KEY!")
-
+def run_saturday_day_session() -> None:
+    """Główny przebieg sobotniej sesji dziennej: koszykówka, hokej, tenis (bez NBA/NHL)."""
     now_local = datetime.now(TZ)
     window_start, window_end = get_day_session_window(now_local)
-    logger.info("Sesja DZIENNA: %s -> %s", window_start, window_end)
+    logger.info("Start sesji dziennej: %s -> %s", window_start, window_end)
 
     sports = fetch_all_target_sports()
     all_picks: List[Dict[str, Any]] = []
@@ -291,7 +367,7 @@ def run_day_now() -> None:
         if not events:
             continue
 
-        picks = extract_day_picks(
+        picks = extract_quality_picks(
             events=events,
             sport_key=s_key,
             sport_title=s_title,
@@ -301,11 +377,11 @@ def run_day_now() -> None:
         )
         all_picks.extend(picks)
 
-    logger.info("Zebrano %d typów w sesji dziennej.", len(all_picks))
+    logger.info("Zebrano %d quality picków w oknie dziennym.", len(all_picks))
     coupons = build_ako2_coupons(all_picks, max_coupons=MAX_COUPONS)
     message = format_telegram_message(window_start, window_end, coupons)
     send_telegram(message)
 
 
 if __name__ == "__main__":
-    run_day_now()
+    run_saturday_day_session()
