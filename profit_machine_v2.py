@@ -27,7 +27,7 @@ TZ = ZoneInfo(TZ_NAME)
 # Wyjątkowo na start wysyła paczkę na nockę (bo 20:00 już minęła), potem działa według harmonogramu 08:00 / 20:00
 START_NIGHT_NOW = os.getenv("START_NIGHT_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
 
-# Widełki pod AKO2 i Betclic (25 / 50 / 75 PLN) — minimum 1.20 na nogę pod grę bez podatku
+# System dobierania kuponów AKO2, stawki i limit — z twardym minimum 1.20 na zdarzenie
 AKO_MIN = float(os.getenv("AKO_MIN", "1.85"))
 AKO_MAX = float(os.getenv("AKO_MAX", "3.60"))
 MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.20"))
@@ -44,24 +44,13 @@ TARGET_GROUPS = {
     "tennis": "Tenis",
 }
 
-BLOCKED_DAY_KEYWORDS = (
-    "nba",
-    "wnba",
-    "nhl",
-    "ahl",
-    "ncaab",
-    "ncaaf",
-    "g_league",
-    "gleague",
-)
-
 BASE_URL = "https://api.the-odds-api.com/v4"
 
 
 def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, datetime]:
     """
-    - 'day' (odpalane o 08:00): od startu do 19:59 tego samego dnia (mecze dzienne).
-    - 'night' (odpalane o 20:00 lub wyjątkowo na start): od teraz do 08:30 kolejnego dnia (nocka).
+    - 'day' (08:00): od startu do 19:59 tego samego dnia.
+    - 'night' (20:00 lub wyjątkowo na start): od teraz do 08:30 kolejnego dnia.
     """
     today = now_local.date()
 
@@ -78,20 +67,8 @@ def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, dat
     return start, end
 
 
-def is_filtered_out(session: str, sport_key: str, sport_title: str, commence_local: datetime) -> bool:
-    """W sesji dziennej (08:00) blokuje NBA/NHL oraz późne okienka USA; w nocnej (20:00) puszcza."""
-    if session != "day":
-        return False
-    text = f"{sport_key} {sport_title}".lower()
-    if any(bad in text for bad in BLOCKED_DAY_KEYWORDS):
-        return True
-    if any(tag in text for tag in ("usa", "north america", "canada")) and commence_local.hour >= 16:
-        return True
-    return False
-
-
-def fetch_all_target_sports(session: str) -> List[Dict[str, Any]]:
-    """Pobiera wszystkie aktywne rozgrywki dla koszykówki, hokeja i tenisa."""
+def fetch_all_target_sports() -> List[Dict[str, Any]]:
+    """Pobiera wszystkie aktywne rozgrywki dla koszykówki, hokeja i tenisa (w tym ligi amerykańskie)."""
     url = f"{BASE_URL}/sports"
     params = {"apiKey": ODDS_API_KEY, "all": "false"}
     resp = requests.get(url, params=params, timeout=20)
@@ -102,15 +79,10 @@ def fetch_all_target_sports(session: str) -> List[Dict[str, Any]]:
     for s in sports:
         group = (s.get("group") or "").lower()
         key = (s.get("key") or "").lower()
-        title = (s.get("title") or "").lower()
+        if any(grp in group or key.startswith(grp) for grp in TARGET_GROUPS):
+            matched.append(s)
 
-        if not any(grp in group or key.startswith(grp) for grp in TARGET_GROUPS):
-            continue
-        if session == "day" and any(bad in f"{key} {title}" for bad in BLOCKED_DAY_KEYWORDS):
-            continue
-        matched.append(s)
-
-    logger.info("Aktywne ligi/turnieje (%s): %d", session, len(matched))
+    logger.info("Aktywne ligi/turnieje (kosz / hokej / tenis): %d", len(matched))
     return matched
 
 
@@ -143,7 +115,6 @@ def compute_quality_score(best_odds: float, all_odds: List[float]) -> float:
 
 def extract_quality_picks(
     events: List[Dict[str, Any]],
-    session: str,
     sport_key: str,
     sport_title: str,
     group_label: str,
@@ -159,9 +130,6 @@ def extract_quality_picks(
 
         commence_local = datetime.fromisoformat(commence_raw.replace("Z", "+00:00")).astimezone(TZ)
         if not (window_start <= commence_local <= window_end):
-            continue
-
-        if is_filtered_out(session, sport_key, sport_title, commence_local):
             continue
 
         home = ev.get("home_team")
@@ -188,6 +156,8 @@ def extract_quality_picks(
             if not entries:
                 continue
             best_price, best_bm = max(entries, key=lambda x: x[0])
+            if best_price < MIN_LEG_ODDS:
+                continue
             all_prices = [p for p, _ in entries]
             picks.append(
                 {
@@ -218,8 +188,10 @@ def choose_stake_pln(ako: float, avg_quality: float) -> int:
 
 
 def build_ako2_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPONS) -> List[Dict[str, Any]]:
+    valid_picks = [p for p in picks if p["odds"] >= MIN_LEG_ODDS]
+
     best_per_event: Dict[str, Dict[str, Any]] = {}
-    for p in sorted(picks, key=lambda x: x["quality_score"], reverse=True):
+    for p in sorted(valid_picks, key=lambda x: x["quality_score"], reverse=True):
         eid = p["event_id"]
         if eid not in best_per_event:
             best_per_event[eid] = p
@@ -303,12 +275,12 @@ def format_telegram_message(
     header = (
         f"🔥🏀🏒🎾 *PACZKA AKO2 — {title_label}*\n"
         f"🕒 Okno: `{window_start.strftime('%d.%m %H:%M')}` – `{window_end.strftime('%d.%m %H:%M')}` ({TZ_NAME})\n"
-        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs nogi: `{MIN_LEG_ODDS:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN` (Betclic)\n"
+        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if not coupons:
-        return header + f"⚠️ Brak par AKO2 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` (min. `{MIN_LEG_ODDS:.2f}`/noga) w tym oknie."
+        return header + f"⚠️ Brak par AKO2 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` (min. `{MIN_LEG_ODDS:.2f}`/zdarzenie) w tym oknie."
 
     total_stake = sum(c["stake_pln"] for c in coupons)
     blocks = [header]
@@ -349,7 +321,7 @@ def run_session(session: str, is_startup_catchup: bool = False) -> None:
     window_start, window_end = get_session_window(session, now_local)
     logger.info("Start sesji [%s]: %s -> %s", session, window_start, window_end)
 
-    sports = fetch_all_target_sports(session)
+    sports = fetch_all_target_sports()
     all_picks: List[Dict[str, Any]] = []
 
     for s in sports:
@@ -369,7 +341,6 @@ def run_session(session: str, is_startup_catchup: bool = False) -> None:
 
         picks = extract_quality_picks(
             events=events,
-            session=session,
             sport_key=s_key,
             sport_title=s_title,
             group_label=group_label,
