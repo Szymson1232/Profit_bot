@@ -1,10 +1,11 @@
 import os
+import json
 import time as pytime
 import logging
 from datetime import datetime, timedelta, time
 from itertools import combinations
 from statistics import mean
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Set
 from zoneinfo import ZoneInfo
 
 import requests
@@ -15,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PITOS_BOT")
 
-# Nowy klucz API (możesz też nadpisać zmienną środowiskową ODDS_API_KEY)
+# Klucz API (możesz też nadpisać zmienną środowiskową ODDS_API_KEY)
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "a2b9167ee71a696f4c0ebb1943613714").strip()
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
@@ -25,10 +26,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 TZ_NAME = os.getenv("TIMEZONE", "Europe/Warsaw")
 TZ = ZoneInfo(TZ_NAME)
 
-# Teraz NIE wysyła nic od razu na starcie — czeka na harmonogram (08:00 dzień, 20:00 noc)
-START_NOW = os.getenv("START_NOW", "false").strip().lower() in ("1", "true", "yes", "on")
+# Teraz od razu puszcza paczkę na start, żeby dobić kupony w bieżącej sesji
+START_NOW = os.getenv("START_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
 
-# Widełki pod AKO2 oraz AKO3 — twarde minimum 1.20 na każde zdarzenie, maksymalnie 6 kuponów na sesję
+# Plik przechowujący event_id już użytych meczów w aktualnej sesji
+SESSION_STATE_FILE = os.getenv("SESSION_STATE_FILE", "session_used_events.json").strip()
+
+# Widełki pod AKO2 oraz AKO3 — twarde minimum 1.20 na każde zdarzenie, maksymalnie 6 kuponów na paczkę
 AKO_MIN = float(os.getenv("AKO_MIN", "1.85"))
 AKO_MAX = float(os.getenv("AKO_MAX", "6.50"))
 MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.20"))
@@ -48,18 +52,62 @@ TARGET_GROUPS = {
 BASE_URL = "https://api.the-odds-api.com/v4"
 
 
+def resolve_current_session(now_local: datetime) -> str:
+    """Określa bieżącą sesję na podstawie godziny lokalnej: do 19:59 -> 'day', od 20:00 -> 'night'."""
+    if now_local.hour < 20:
+        return "day"
+    return "night"
+
+
+def get_session_key(session: str, now_local: datetime) -> str:
+    """Unikalny klucz sesji dla danego dnia i typu sesji (day / night)."""
+    return f"{now_local.date().isoformat()}_{session}"
+
+
+def load_session_used_events(session_key: str) -> Set[str]:
+    """Wczytuje event_id meczów już użytych w tej samej sesji."""
+    if not os.path.exists(SESSION_STATE_FILE):
+        return set()
+    try:
+        with open(SESSION_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("session_key") == session_key and isinstance(data.get("used_event_ids"), list):
+            return set(str(x) for x in data["used_event_ids"])
+    except Exception as exc:
+        logger.warning("Nie udało się wczytać stanu sesji: %s", exc)
+    return set()
+
+
+def save_session_used_events(session_key: str, used_event_ids: Set[str]) -> None:
+    """Zapisuje event_id meczów użytych w bieżącej sesji."""
+    try:
+        with open(SESSION_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "session_key": session_key,
+                    "used_event_ids": sorted(used_event_ids),
+                    "updated_at": datetime.now(TZ).isoformat(),
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+    except Exception as exc:
+        logger.warning("Nie udało się zapisać stanu sesji: %s", exc)
+
+
 def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, datetime]:
     """
-    - 'day' (planowo 08:00): od startu do 19:59 tego samego dnia (pełna oferta w tym ligi amerykańskie).
-    - 'night' (planowo 20:00): od startu do 08:30 kolejnego dnia.
+    - 'day': od teraz do 21:30 tego samego dnia (pełna oferta w tym ligi amerykańskie).
+    - 'night': od teraz do 08:30 kolejnego dnia.
     """
     today = now_local.date()
 
     if session == "day":
         start = now_local
-        end = datetime.combine(today, time(19, 59), tzinfo=TZ)
+        end = datetime.combine(today, time(21, 30), tzinfo=TZ)
         if end <= start:
-            end = start + timedelta(hours=4)
+            end = start + timedelta(hours=3)
         return start, end
 
     start = now_local
@@ -69,7 +117,7 @@ def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, dat
 
 
 def fetch_all_target_sports() -> List[Dict[str, Any]]:
-    """Pobiera wszystkie aktywne rozgrywki dla koszykówki, hokeja i tenisa (w tym ligi amerykańskie)."""
+    """Pobiera wszystkie aktywne rozgrywki dla koszykówki, hokeja i tenisa (pełna oferta, w tym USA i niższe ligi)."""
     url = f"{BASE_URL}/sports"
     params = {"apiKey": ODDS_API_KEY, "all": "false"}
     resp = requests.get(url, params=params, timeout=20)
@@ -88,11 +136,11 @@ def fetch_all_target_sports() -> List[Dict[str, Any]]:
 
 
 def fetch_events_for_sport(sport_key: str) -> List[Dict[str, Any]]:
-    """Pobiera mecze i kursy h2h dla wskazanej ligi/turnieju."""
+    """Pobiera mecze i kursy h2h dla wskazanej ligi/turnieju z szerokiego zestawu regionów."""
     url = f"{BASE_URL}/sports/{sport_key}/odds"
     params = {
         "apiKey": ODDS_API_KEY,
-        "regions": "eu,uk,us",
+        "regions": "eu,uk,us,au",
         "markets": "h2h",
         "oddsFormat": "decimal",
     }
@@ -121,10 +169,15 @@ def extract_quality_picks(
     group_label: str,
     window_start: datetime,
     window_end: datetime,
+    blocked_event_ids: Set[str],
 ) -> List[Dict[str, Any]]:
     picks: List[Dict[str, Any]] = []
 
     for ev in events:
+        ev_id = str(ev.get("id") or "")
+        if not ev_id or ev_id in blocked_event_ids:
+            continue
+
         commence_raw = ev.get("commence_time")
         if not commence_raw:
             continue
@@ -162,7 +215,7 @@ def extract_quality_picks(
             all_prices = [p for p, _ in entries]
             picks.append(
                 {
-                    "event_id": ev.get("id"),
+                    "event_id": ev_id,
                     "sport_key": sport_key,
                     "sport_title": sport_title,
                     "group_label": group_label,
@@ -181,21 +234,26 @@ def extract_quality_picks(
 
 
 def choose_stake_pln(ako: float, avg_quality: float, legs_count: int) -> int:
-    """Dobiera stawkę 25 / 50 / 75 PLN pod kurs AKO, jakość i liczbę zdarzeń (AKO2 / AKO3)."""
     if legs_count == 2 and ako <= 2.40 and avg_quality >= 115.0:
         return STAKE_HIGH
-    if ako <= 3.20:
+    if legs_count == 2 and ako <= 3.10:
+        return STAKE_MID
+    if legs_count == 3 and ako <= 3.60 and avg_quality >= 115.0:
         return STAKE_MID
     return STAKE_LOW
 
 
-def build_ako_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPONS) -> List[Dict[str, Any]]:
+def build_ako_coupons(
+    picks: List[Dict[str, Any]],
+    max_coupons: int = MAX_COUPONS,
+    already_used_in_session: Set[str] | None = None,
+) -> Tuple[List[Dict[str, Any]], Set[str]]:
     """
-    Buduje maksymalnie max_coupons (domyślnie 6) kuponów AKO2 oraz AKO3 z najlepszych quality picków:
-    - najpierw unikalne mecze (AKO2 i AKO3),
-    - potem dociąganie kolejnych par/trójek z pozostałych kombinacji, jeśli jest na to materiał.
+    Buduje maksymalnie max_coupons (domyślnie 6) kuponów AKO2 oraz AKO3:
+    - ZERO powtórek meczów w paczce oraz ZERO meczów już użytych w tej sesji.
     """
-    valid_picks = [p for p in picks if p["odds"] >= MIN_LEG_ODDS]
+    blocked = set(already_used_in_session or set())
+    valid_picks = [p for p in picks if p["odds"] >= MIN_LEG_ODDS and p["event_id"] not in blocked]
 
     best_per_event: Dict[str, Dict[str, Any]] = {}
     for p in sorted(valid_picks, key=lambda x: x["quality_score"], reverse=True):
@@ -204,20 +262,13 @@ def build_ako_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPON
             best_per_event[eid] = p
 
     ranked_picks = sorted(best_per_event.values(), key=lambda x: x["quality_score"], reverse=True)
-    coupons: List[Dict[str, Any]] = []
-    used_events = set()
-    seen_combos = set()
+    candidates: List[Dict[str, Any]] = []
 
-    # Etap 1: osobne mecze dla każdego kuponu (AKO2 i AKO3)
     for legs_count in (2, 3):
         if len(ranked_picks) < legs_count:
             continue
         for combo in combinations(ranked_picks, legs_count):
-            if len(coupons) >= max_coupons:
-                return coupons
             if any(leg["odds"] < MIN_LEG_ODDS for leg in combo):
-                continue
-            if any(leg["event_id"] in used_events for leg in combo):
                 continue
 
             ako = 1.0
@@ -226,83 +277,71 @@ def build_ako_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPON
             ako = round(ako, 2)
 
             if AKO_MIN <= ako <= AKO_MAX:
-                combo_key = tuple(sorted(f"{leg['event_id']}:{leg['selection']}" for leg in combo))
-                seen_combos.add(combo_key)
-                avg_q = mean(leg["quality_score"] for leg in combo)
+                avg_q = round(mean(leg["quality_score"] for leg in combo), 1)
                 stake_pln = choose_stake_pln(ako, avg_q, legs_count)
-                coupons.append(
+                candidates.append(
                     {
                         "legs": list(combo),
                         "legs_count": legs_count,
                         "ako": ako,
                         "stake_pln": stake_pln,
                         "potential_return": round(stake_pln * ako, 2),
-                        "quality": round(avg_q, 1),
+                        "quality": avg_q,
+                        "event_ids": {leg["event_id"] for leg in combo},
                     }
                 )
-                for leg in combo:
-                    used_events.add(leg["event_id"])
 
-    # Etap 2: dociąganie do limitu max_coupons (do 6) z pozostałych kombinacji
-    for legs_count in (2, 3):
-        if len(ranked_picks) < legs_count:
+    candidates.sort(key=lambda c: c["quality"], reverse=True)
+
+    selected_coupons: List[Dict[str, Any]] = []
+    used_in_run: Set[str] = set()
+
+    for cand in candidates:
+        if len(selected_coupons) >= max_coupons:
+            break
+        if cand["event_ids"] & blocked or cand["event_ids"] & used_in_run:
             continue
-        for combo in combinations(ranked_picks, legs_count):
-            if len(coupons) >= max_coupons:
-                break
-            if any(leg["odds"] < MIN_LEG_ODDS for leg in combo):
-                continue
-            event_ids = [leg["event_id"] for leg in combo]
-            if len(set(event_ids)) != legs_count:
-                continue
 
-            combo_key = tuple(sorted(f"{leg['event_id']}:{leg['selection']}" for leg in combo))
-            if combo_key in seen_combos:
-                continue
+        selected_coupons.append(
+            {
+                "legs": cand["legs"],
+                "legs_count": cand["legs_count"],
+                "ako": cand["ako"],
+                "stake_pln": cand["stake_pln"],
+                "potential_return": cand["potential_return"],
+                "quality": cand["quality"],
+            }
+        )
+        used_in_run.update(cand["event_ids"])
 
-            ako = 1.0
-            for leg in combo:
-                ako *= leg["odds"]
-            ako = round(ako, 2)
-
-            if AKO_MIN <= ako <= AKO_MAX:
-                seen_combos.add(combo_key)
-                avg_q = mean(leg["quality_score"] for leg in combo)
-                stake_pln = choose_stake_pln(ako, avg_q, legs_count)
-                coupons.append(
-                    {
-                        "legs": list(combo),
-                        "legs_count": legs_count,
-                        "ako": ako,
-                        "stake_pln": stake_pln,
-                        "potential_return": round(stake_pln * ako, 2),
-                        "quality": round(avg_q, 1),
-                    }
-                )
-
-    return coupons
+    return selected_coupons, used_in_run
 
 
 def format_telegram_message(
     session: str, window_start: datetime, window_end: datetime, coupons: List[Dict[str, Any]]
 ) -> str:
     label_map = {
-        "day": "SESJA DZIEŃ (08:00)",
-        "night": "SESJA NOC (20:00)",
+        "day": "SESJA DZIEŃ",
+        "night": "SESJA NOC",
     }
     title_label = label_map.get(session, session.upper())
 
     header = (
         f"🔥🏀🏒🎾 *PACZKA AKO2 / AKO3 — {title_label}*\n"
         f"🕒 Okno: `{window_start.strftime('%d.%m %H:%M')}` – `{window_end.strftime('%d.%m %H:%M')}` ({TZ_NAME})\n"
-        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Max kuponów: `{MAX_COUPONS}`\n"
+        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Max kuponów: `{MAX_COUPONS}` (bez powtórek w sesji)\n"
         f"💰 Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if not coupons:
-        return header + f"⚠️ Brak kuponów AKO2/AKO3 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` (min. `{MIN_LEG_ODDS:.2f}`/zdarzenie) w tym oknie."
+        return (
+            header
+            + f"⚠️ Brak nowych, nieużytych jeszcze w tej sesji kuponów AKO2/AKO3 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}`."
+        )
 
+    ako2_cnt = sum(1 for c in coupons if c["legs_count"] == 2)
+    ako3_cnt = sum(1 for c in coupons if c["legs_count"] == 3)
     total_stake = sum(c["stake_pln"] for c in coupons)
     blocks = [header]
 
@@ -321,7 +360,11 @@ def format_telegram_message(
             )
         blocks.append("\n".join(lines))
 
-    blocks.append(f"━━━━━━━━━━━━━━━━━━━━\n💰 Łączna ekspozycja paczki ({len(coupons)} kupony/ów): *{total_stake} PLN*")
+    blocks.append(
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Skład: *{ako2_cnt}x AKO2* + *{ako3_cnt}x AKO3* | Łącznie kuponów: *{len(coupons)}* (nowe mecze)\n"
+        f"💰 Łączna ekspozycja paczki: *{total_stake} PLN*"
+    )
     return "\n\n".join(blocks)
 
 
@@ -340,8 +383,18 @@ def send_telegram(text: str) -> None:
 
 def run_session(session: str) -> None:
     now_local = datetime.now(TZ)
+    session_key = get_session_key(session, now_local)
+    used_in_session = load_session_used_events(session_key)
+
     window_start, window_end = get_session_window(session, now_local)
-    logger.info("Start sesji [%s]: %s -> %s", session, window_start, window_end)
+    logger.info(
+        "Start sesji [%s] (%s): %s -> %s | Już użytych meczów w sesji: %d",
+        session,
+        session_key,
+        window_start,
+        window_end,
+        len(used_in_session),
+    )
 
     sports = fetch_all_target_sports()
     all_picks: List[Dict[str, Any]] = []
@@ -368,24 +421,37 @@ def run_session(session: str) -> None:
             group_label=group_label,
             window_start=window_start,
             window_end=window_end,
+            blocked_event_ids=used_in_session,
         )
         all_picks.extend(picks)
 
-    logger.info("Zebrano %d quality picków w sesji [%s].", len(all_picks), session)
-    coupons = build_ako_coupons(all_picks, max_coupons=MAX_COUPONS)
+    logger.info("Zebrano %d nowych quality picków w sesji [%s].", len(all_picks), session)
+    coupons, newly_used = build_ako_coupons(
+        all_picks,
+        max_coupons=MAX_COUPONS,
+        already_used_in_session=used_in_session,
+    )
     message = format_telegram_message(session, window_start, window_end, coupons)
     send_telegram(message)
 
+    if newly_used:
+        updated_used = used_in_session | newly_used
+        save_session_used_events(session_key, updated_used)
+        logger.info("Zapisano %d użytych meczów dla sesji %s.", len(updated_used), session_key)
+
 
 def main() -> None:
+    now_init = datetime.now(TZ)
+    current_session = resolve_current_session(now_init)
+
     if START_NOW:
-        logger.info("START_NOW=true — wysyłka od razu...")
+        logger.info("START_NOW=true — wysyłka od razu dla bieżącej sesji [%s]...", current_session)
         try:
-            run_session("day")
+            run_session(current_session)
         except Exception as exc:
             logger.exception("Błąd przy wysyłce startowej: %s", exc)
     else:
-        logger.info("Start w trybie oczekiwania — teraz nic nie wysyłamy. Planowo: 08:00 (dzień) i 20:00 (noc).")
+        logger.info("Start w trybie oczekiwania. Planowo: 08:00 (dzień) i 20:00 (noc).")
 
     schedule_map = {
         (8, 0): "day",
