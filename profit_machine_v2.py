@@ -15,7 +15,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PITOS_BOT")
 
-ODDS_API_KEY = os.getenv("ODDS_API_KEY", "133d53ed2236d1e09849deabd16155e6").strip()
+# Nowy klucz API (możesz też nadpisać zmienną środowiskową ODDS_API_KEY)
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "a2b9167ee71a696f4c0ebb1943613714").strip()
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
 ).strip()
@@ -24,12 +25,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 TZ_NAME = os.getenv("TIMEZONE", "Europe/Warsaw")
 TZ = ZoneInfo(TZ_NAME)
 
-# Wyjątkowo na start wysyła paczkę na nockę (bo 20:00 już minęła), potem działa według harmonogramu 08:00 / 20:00
-START_NIGHT_NOW = os.getenv("START_NIGHT_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
+# Teraz NIE wysyła nic od razu na starcie — czeka na harmonogram (08:00 dzień, 20:00 noc)
+START_NOW = os.getenv("START_NOW", "false").strip().lower() in ("1", "true", "yes", "on")
 
-# System dobierania kuponów AKO2, stawki i limit — z twardym minimum 1.20 na zdarzenie
+# Widełki pod AKO2 oraz AKO3 — twarde minimum 1.20 na każde zdarzenie
 AKO_MIN = float(os.getenv("AKO_MIN", "1.85"))
-AKO_MAX = float(os.getenv("AKO_MAX", "3.60"))
+AKO_MAX = float(os.getenv("AKO_MAX", "6.50"))
 MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.20"))
 MAX_LEG_ODDS = float(os.getenv("MAX_LEG_ODDS", "3.80"))
 MAX_COUPONS = int(os.getenv("MAX_COUPONS_PER_RUN", "5"))
@@ -49,8 +50,8 @@ BASE_URL = "https://api.the-odds-api.com/v4"
 
 def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, datetime]:
     """
-    - 'day' (08:00): od startu do 19:59 tego samego dnia.
-    - 'night' (20:00 lub wyjątkowo na start): od teraz do 08:30 kolejnego dnia.
+    - 'day' (planowo 08:00): od startu do 19:59 tego samego dnia (pełna oferta w tym ligi amerykańskie).
+    - 'night' (planowo 20:00): od startu do 08:30 kolejnego dnia.
     """
     today = now_local.date()
 
@@ -179,15 +180,21 @@ def extract_quality_picks(
     return picks
 
 
-def choose_stake_pln(ako: float, avg_quality: float) -> int:
-    if ako <= 2.35 and avg_quality >= 115.0:
+def choose_stake_pln(ako: float, avg_quality: float, legs_count: int) -> int:
+    """Dobiera stawkę 25 / 50 / 75 PLN pod kurs AKO, jakość i liczbę zdarzeń (AKO2 / AKO3)."""
+    if legs_count == 2 and ako <= 2.40 and avg_quality >= 115.0:
         return STAKE_HIGH
-    if ako <= 2.95:
+    if ako <= 3.20:
         return STAKE_MID
     return STAKE_LOW
 
 
-def build_ako2_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPONS) -> List[Dict[str, Any]]:
+def build_ako_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPONS) -> List[Dict[str, Any]]:
+    """
+    Buduje kupony AKO2 oraz AKO3 z najlepszych quality picków:
+    - najpierw unikalne mecze (AKO2 i AKO3),
+    - potem dociąganie brakujących kuponów z pozostałych kombinacji.
+    """
     valid_picks = [p for p in picks if p["odds"] >= MIN_LEG_ODDS]
 
     best_per_event: Dict[str, Dict[str, Any]] = {}
@@ -199,95 +206,107 @@ def build_ako2_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPO
     ranked_picks = sorted(best_per_event.values(), key=lambda x: x["quality_score"], reverse=True)
     coupons: List[Dict[str, Any]] = []
     used_events = set()
-    seen_pairs = set()
+    seen_combos = set()
 
-    for leg_a, leg_b in combinations(ranked_picks, 2):
-        if len(coupons) >= max_coupons:
-            return coupons
-        if leg_a["odds"] < MIN_LEG_ODDS or leg_b["odds"] < MIN_LEG_ODDS:
+    for legs_count in (2, 3):
+        if len(ranked_picks) < legs_count:
             continue
-        if leg_a["event_id"] in used_events or leg_b["event_id"] in used_events:
-            continue
+        for combo in combinations(ranked_picks, legs_count):
+            if len(coupons) >= max_coupons:
+                return coupons
+            if any(leg["odds"] < MIN_LEG_ODDS for leg in combo):
+                continue
+            if any(leg["event_id"] in used_events for leg in combo):
+                continue
 
-        ako = round(leg_a["odds"] * leg_b["odds"], 2)
-        if AKO_MIN <= ako <= AKO_MAX:
-            pair_key = tuple(
-                sorted([f"{leg_a['event_id']}:{leg_a['selection']}", f"{leg_b['event_id']}:{leg_b['selection']}"])
-            )
-            seen_pairs.add(pair_key)
-            avg_q = (leg_a["quality_score"] + leg_b["quality_score"]) / 2.0
-            stake_pln = choose_stake_pln(ako, avg_q)
-            coupons.append(
-                {
-                    "legs": [leg_a, leg_b],
-                    "ako": ako,
-                    "stake_pln": stake_pln,
-                    "potential_return": round(stake_pln * ako, 2),
-                    "quality": round(avg_q, 1),
-                }
-            )
-            used_events.add(leg_a["event_id"])
-            used_events.add(leg_b["event_id"])
+            ako = 1.0
+            for leg in combo:
+                ako *= leg["odds"]
+            ako = round(ako, 2)
 
-    for leg_a, leg_b in combinations(ranked_picks, 2):
-        if len(coupons) >= max_coupons:
-            break
-        if leg_a["odds"] < MIN_LEG_ODDS or leg_b["odds"] < MIN_LEG_ODDS:
-            continue
-        if leg_a["event_id"] == leg_b["event_id"]:
-            continue
+            if AKO_MIN <= ako <= AKO_MAX:
+                combo_key = tuple(sorted(f"{leg['event_id']}:{leg['selection']}" for leg in combo))
+                seen_combos.add(combo_key)
+                avg_q = mean(leg["quality_score"] for leg in combo)
+                stake_pln = choose_stake_pln(ako, avg_q, legs_count)
+                coupons.append(
+                    {
+                        "legs": list(combo),
+                        "legs_count": legs_count,
+                        "ako": ako,
+                        "stake_pln": stake_pln,
+                        "potential_return": round(stake_pln * ako, 2),
+                        "quality": round(avg_q, 1),
+                    }
+                )
+                for leg in combo:
+                    used_events.add(leg["event_id"])
 
-        pair_key = tuple(
-            sorted([f"{leg_a['event_id']}:{leg_a['selection']}", f"{leg_b['event_id']}:{leg_b['selection']}"])
-        )
-        if pair_key in seen_pairs:
+    for legs_count in (2, 3):
+        if len(ranked_picks) < legs_count:
             continue
+        for combo in combinations(ranked_picks, legs_count):
+            if len(coupons) >= max_coupons:
+                break
+            if any(leg["odds"] < MIN_LEG_ODDS for leg in combo):
+                continue
+            event_ids = [leg["event_id"] for leg in combo]
+            if len(set(event_ids)) != legs_count:
+                continue
 
-        ako = round(leg_a["odds"] * leg_b["odds"], 2)
-        if AKO_MIN <= ako <= AKO_MAX:
-            seen_pairs.add(pair_key)
-            avg_q = (leg_a["quality_score"] + leg_b["quality_score"]) / 2.0
-            stake_pln = choose_stake_pln(ako, avg_q)
-            coupons.append(
-                {
-                    "legs": [leg_a, leg_b],
-                    "ako": ako,
-                    "stake_pln": stake_pln,
-                    "potential_return": round(stake_pln * ako, 2),
-                    "quality": round(avg_q, 1),
-                }
-            )
+            combo_key = tuple(sorted(f"{leg['event_id']}:{leg['selection']}" for leg in combo))
+            if combo_key in seen_combos:
+                continue
+
+            ako = 1.0
+            for leg in combo:
+                ako *= leg["odds"]
+            ako = round(ako, 2)
+
+            if AKO_MIN <= ako <= AKO_MAX:
+                seen_combos.add(combo_key)
+                avg_q = mean(leg["quality_score"] for leg in combo)
+                stake_pln = choose_stake_pln(ako, avg_q, legs_count)
+                coupons.append(
+                    {
+                        "legs": list(combo),
+                        "legs_count": legs_count,
+                        "ako": ako,
+                        "stake_pln": stake_pln,
+                        "potential_return": round(stake_pln * ako, 2),
+                        "quality": round(avg_q, 1),
+                    }
+                )
 
     return coupons
 
 
 def format_telegram_message(
-    session: str, window_start: datetime, window_end: datetime, coupons: List[Dict[str, Any]], is_startup_catchup: bool = False
+    session: str, window_start: datetime, window_end: datetime, coupons: List[Dict[str, Any]]
 ) -> str:
     label_map = {
-        "day": "MECZĘ DZIENNE (08:00)",
-        "night": "NOCKA (20:00)",
+        "day": "SESJA DZIEŃ (08:00)",
+        "night": "SESJA NOC (20:00)",
     }
     title_label = label_map.get(session, session.upper())
-    if is_startup_catchup and session == "night":
-        title_label = "NOCKA — WYJĄTKOWY ZRZUT NA START"
 
     header = (
-        f"🔥🏀🏒🎾 *PACZKA AKO2 — {title_label}*\n"
+        f"🔥🏀🏒🎾 *PACZKA AKO2 / AKO3 — {title_label}*\n"
         f"🕒 Okno: `{window_start.strftime('%d.%m %H:%M')}` – `{window_end.strftime('%d.%m %H:%M')}` ({TZ_NAME})\n"
         f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if not coupons:
-        return header + f"⚠️ Brak par AKO2 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` (min. `{MIN_LEG_ODDS:.2f}`/zdarzenie) w tym oknie."
+        return header + f"⚠️ Brak kuponów AKO2/AKO3 w widełkach `{AKO_MIN:.2f}–{AKO_MAX:.2f}` (min. `{MIN_LEG_ODDS:.2f}`/zdarzenie) w tym oknie."
 
     total_stake = sum(c["stake_pln"] for c in coupons)
     blocks = [header]
 
     for idx, c in enumerate(coupons, start=1):
+        ako_tag = f"AKO{c['legs_count']}"
         lines = [
-            f"*KUPON #{idx} (AKO2)* | Kurs: *{c['ako']:.2f}* | Stawka: *{c['stake_pln']} PLN* "
+            f"*KUPON #{idx} ({ako_tag})* | Kurs: *{c['ako']:.2f}* | Stawka: *{c['stake_pln']} PLN* "
             f"| Wygrana: *{c['potential_return']:.2f} PLN* | Q: `{c['quality']}`"
         ]
         for leg in c["legs"]:
@@ -313,10 +332,10 @@ def send_telegram(text: str) -> None:
     }
     resp = requests.post(url, json=payload, timeout=20)
     resp.raise_for_status()
-    logger.info("Wysłano paczkę AKO2 na Telegram (chat_id=%s).", TELEGRAM_CHAT_ID)
+    logger.info("Wysłano paczkę AKO2/AKO3 na Telegram (chat_id=%s).", TELEGRAM_CHAT_ID)
 
 
-def run_session(session: str, is_startup_catchup: bool = False) -> None:
+def run_session(session: str) -> None:
     now_local = datetime.now(TZ)
     window_start, window_end = get_session_window(session, now_local)
     logger.info("Start sesji [%s]: %s -> %s", session, window_start, window_end)
@@ -350,18 +369,20 @@ def run_session(session: str, is_startup_catchup: bool = False) -> None:
         all_picks.extend(picks)
 
     logger.info("Zebrano %d quality picków w sesji [%s].", len(all_picks), session)
-    coupons = build_ako2_coupons(all_picks, max_coupons=MAX_COUPONS)
-    message = format_telegram_message(session, window_start, window_end, coupons, is_startup_catchup=is_startup_catchup)
+    coupons = build_ako_coupons(all_picks, max_coupons=MAX_COUPONS)
+    message = format_telegram_message(session, window_start, window_end, coupons)
     send_telegram(message)
 
 
 def main() -> None:
-    if START_NIGHT_NOW:
-        logger.info("Wyjątkowy zrzut paczki na nockę na start...")
+    if START_NOW:
+        logger.info("START_NOW=true — wysyłka od razu...")
         try:
-            run_session("night", is_startup_catchup=True)
+            run_session("day")
         except Exception as exc:
-            logger.exception("Błąd przy zrzucie startowym na nockę: %s", exc)
+            logger.exception("Błąd przy wysyłce startowej: %s", exc)
+    else:
+        logger.info("Start w trybie oczekiwania — teraz nic nie wysyłamy. Planowo: 08:00 (dzień) i 20:00 (noc).")
 
     schedule_map = {
         (8, 0): "day",
@@ -370,7 +391,6 @@ def main() -> None:
     fired_today = set()
     last_date = None
 
-    logger.info("Harmonogram aktywny: 08:00 (mecze dzienne) oraz 20:00 (nocka) w strefie %s.", TZ_NAME)
     while True:
         now_local = datetime.now(TZ)
         if now_local.date() != last_date:
@@ -382,7 +402,7 @@ def main() -> None:
             fired_today.add(slot)
             session_to_run = schedule_map[slot]
             try:
-                run_session(session_to_run, is_startup_catchup=False)
+                run_session(session_to_run)
             except Exception as exc:
                 logger.exception("Błąd podczas sesji %s (%s): %s", session_to_run, slot, exc)
 
