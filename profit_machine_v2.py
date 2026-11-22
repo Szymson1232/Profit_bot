@@ -28,12 +28,12 @@ TZ = ZoneInfo(TZ_NAME)
 # Teraz NIE wysyła nic od razu na starcie — czeka na harmonogram (08:00 dzień, 20:00 noc)
 START_NOW = os.getenv("START_NOW", "false").strip().lower() in ("1", "true", "yes", "on")
 
-# Widełki pod AKO2 oraz AKO3 — twarde minimum 1.20 na każde zdarzenie
+# Widełki pod AKO2 oraz AKO3 — twarde minimum 1.20 na każde zdarzenie, maksymalnie 6 kuponów na sesję
 AKO_MIN = float(os.getenv("AKO_MIN", "1.85"))
 AKO_MAX = float(os.getenv("AKO_MAX", "6.50"))
 MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.20"))
 MAX_LEG_ODDS = float(os.getenv("MAX_LEG_ODDS", "3.80"))
-MAX_COUPONS = int(os.getenv("MAX_COUPONS_PER_RUN", "5"))
+MAX_COUPONS = int(os.getenv("MAX_COUPONS_PER_RUN", "6"))
 
 STAKE_LOW = int(os.getenv("STAKE_LOW", "25"))
 STAKE_MID = int(os.getenv("STAKE_MID", "50"))
@@ -191,9 +191,9 @@ def choose_stake_pln(ako: float, avg_quality: float, legs_count: int) -> int:
 
 def build_ako_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPONS) -> List[Dict[str, Any]]:
     """
-    Buduje kupony AKO2 oraz AKO3 z najlepszych quality picków:
+    Buduje maksymalnie max_coupons (domyślnie 6) kuponów AKO2 oraz AKO3 z najlepszych quality picków:
     - najpierw unikalne mecze (AKO2 i AKO3),
-    - potem dociąganie brakujących kuponów z pozostałych kombinacji.
+    - potem dociąganie kolejnych par/trójek z pozostałych kombinacji, jeśli jest na to materiał.
     """
     valid_picks = [p for p in picks if p["odds"] >= MIN_LEG_ODDS]
 
@@ -208,6 +208,7 @@ def build_ako_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPON
     used_events = set()
     seen_combos = set()
 
+    # Etap 1: osobne mecze dla każdego kuponu (AKO2 i AKO3)
     for legs_count in (2, 3):
         if len(ranked_picks) < legs_count:
             continue
@@ -242,6 +243,7 @@ def build_ako_coupons(picks: List[Dict[str, Any]], max_coupons: int = MAX_COUPON
                 for leg in combo:
                     used_events.add(leg["event_id"])
 
+    # Etap 2: dociąganie do limitu max_coupons (do 6) z pozostałych kombinacji
     for legs_count in (2, 3):
         if len(ranked_picks) < legs_count:
             continue
@@ -293,7 +295,8 @@ def format_telegram_message(
     header = (
         f"🔥🏀🏒🎾 *PACZKA AKO2 / AKO3 — {title_label}*\n"
         f"🕒 Okno: `{window_start.strftime('%d.%m %H:%M')}` – `{window_end.strftime('%d.%m %H:%M')}` ({TZ_NAME})\n"
-        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN`\n"
+        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Max kuponów: `{MAX_COUPONS}`\n"
+        f"💰 Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
@@ -318,7 +321,7 @@ def format_telegram_message(
             )
         blocks.append("\n".join(lines))
 
-    blocks.append(f"━━━━━━━━━━━━━━━━━━━━\n💰 Łączna ekspozycja paczki: *{total_stake} PLN*")
+    blocks.append(f"━━━━━━━━━━━━━━━━━━━━\n💰 Łączna ekspozycja paczki ({len(coupons)} kupony/ów): *{total_stake} PLN*")
     return "\n\n".join(blocks)
 
 
