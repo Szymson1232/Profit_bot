@@ -26,7 +26,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 TZ_NAME = os.getenv("TIMEZONE", "Europe/Warsaw")
 TZ = ZoneInfo(TZ_NAME)
 
-# Teraz od razu puszcza paczkę na start, żeby dobić kupony w bieżącej sesji
+# Od razu puszcza paczkę testową na start, a potem pilnuje 08:00 (dzień) i 20:00 (noc)
 START_NOW = os.getenv("START_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
 
 # Plik przechowujący event_id już użytych meczów w aktualnej sesji
@@ -43,13 +43,51 @@ STAKE_LOW = int(os.getenv("STAKE_LOW", "25"))
 STAKE_MID = int(os.getenv("STAKE_MID", "50"))
 STAKE_HIGH = int(os.getenv("STAKE_HIGH", "75"))
 
+# Docelowe dyscypliny: koszykówka, hokej, tenis, futbol amerykański i esport
 TARGET_GROUPS = {
     "basketball": "Koszykówka",
     "icehockey": "Hokej",
     "tennis": "Tenis",
+    "americanfootball": "Futbol amerykański",
+    "esports": "Esport",
 }
 
+ESPORT_KEYWORDS = (
+    "esport",
+    "counter-strike",
+    "cs2",
+    "cs:go",
+    "league of legends",
+    "lol",
+    "dota",
+    "valorant",
+    "overwatch",
+    "call of duty",
+    "rainbow six",
+    "rocket league",
+)
+
 BASE_URL = "https://api.the-odds-api.com/v4"
+
+
+def detect_group_label(group_raw: str, sport_key: str, sport_title: str) -> str | None:
+    """Dopasowuje dyscyplinę do docelowej puli: kosz, hokej, tenis, futbol amerykański, esport."""
+    grp = (group_raw or "").lower()
+    key = (sport_key or "").lower()
+    title = (sport_title or "").lower()
+    combined = f"{grp} {key} {title}"
+
+    for k, label in TARGET_GROUPS.items():
+        if k in grp or key.startswith(k):
+            return label
+
+    if "american" in combined or "nfl" in combined or "ncaaf" in combined:
+        return "Futbol amerykański"
+
+    if any(kw in combined for kw in ESPORT_KEYWORDS):
+        return "Esport"
+
+    return None
 
 
 def resolve_current_session(now_local: datetime) -> str:
@@ -98,7 +136,7 @@ def save_session_used_events(session_key: str, used_event_ids: Set[str]) -> None
 
 def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, datetime]:
     """
-    - 'day': od teraz do 21:30 tego samego dnia (pełna oferta w tym ligi amerykańskie).
+    - 'day': od teraz do 21:30 tego samego dnia.
     - 'night': od teraz do 08:30 kolejnego dnia.
     """
     today = now_local.date()
@@ -116,22 +154,24 @@ def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, dat
     return start, end
 
 
-def fetch_all_target_sports() -> List[Dict[str, Any]]:
-    """Pobiera wszystkie aktywne rozgrywki dla koszykówki, hokeja i tenisa (pełna oferta, w tym USA i niższe ligi)."""
+def fetch_all_target_sports() -> List[Tuple[Dict[str, Any], str]]:
+    """Pobiera aktywne rozgrywki dla koszykówki, hokeja, tenisa, futbolu amerykańskiego i esportu."""
     url = f"{BASE_URL}/sports"
     params = {"apiKey": ODDS_API_KEY, "all": "false"}
     resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
     sports = resp.json()
 
-    matched: List[Dict[str, Any]] = []
+    matched: List[Tuple[Dict[str, Any], str]] = []
     for s in sports:
-        group = (s.get("group") or "").lower()
-        key = (s.get("key") or "").lower()
-        if any(grp in group or key.startswith(grp) for grp in TARGET_GROUPS):
-            matched.append(s)
+        group_raw = s.get("group") or ""
+        key = s.get("key") or ""
+        title = s.get("title") or key
+        label = detect_group_label(group_raw, key, title)
+        if label:
+            matched.append((s, label))
 
-    logger.info("Aktywne ligi/turnieje (kosz / hokej / tenis): %d", len(matched))
+    logger.info("Aktywne ligi/turnieje (kosz/hokej/tenis/NFL/esport): %d", len(matched))
     return matched
 
 
@@ -318,18 +358,20 @@ def build_ako_coupons(
 
 
 def format_telegram_message(
-    session: str, window_start: datetime, window_end: datetime, coupons: List[Dict[str, Any]]
+    session: str, window_start: datetime, window_end: datetime, coupons: List[Dict[str, Any]], is_test_run: bool = False
 ) -> str:
     label_map = {
         "day": "SESJA DZIEŃ",
         "night": "SESJA NOC",
     }
     title_label = label_map.get(session, session.upper())
+    if is_test_run:
+        title_label = f"{title_label} — TEST (NOWA PULA)"
 
     header = (
-        f"🔥🏀🏒🎾 *PACZKA AKO2 / AKO3 — {title_label}*\n"
+        f"🔥🏀🏒🎾🏈🎮 *PACZKA AKO2 / AKO3 — {title_label}*\n"
         f"🕒 Okno: `{window_start.strftime('%d.%m %H:%M')}` – `{window_end.strftime('%d.%m %H:%M')}` ({TZ_NAME})\n"
-        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Max kuponów: `{MAX_COUPONS}` (bez powtórek w sesji)\n"
+        f"🎯 AKO: `{AKO_MIN:.2f} – {AKO_MAX:.2f}` | Min. kurs: `{MIN_LEG_ODDS:.2f}` | Max kuponów: `{MAX_COUPONS}` (bez powtórek)\n"
         f"💰 Stawki: `{STAKE_LOW} / {STAKE_MID} / {STAKE_HIGH} PLN`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
@@ -362,7 +404,7 @@ def format_telegram_message(
 
     blocks.append(
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Skład: *{ako2_cnt}x AKO2* + *{ako3_cnt}x AKO3* | Łącznie kuponów: *{len(coupons)}* (nowe mecze)\n"
+        f"📊 Skład: *{ako2_cnt}x AKO2* + *{ako3_cnt}x AKO3* | Łącznie kuponów: *{len(coupons)}* (unikalne mecze)\n"
         f"💰 Łączna ekspozycja paczki: *{total_stake} PLN*"
     )
     return "\n\n".join(blocks)
@@ -381,7 +423,7 @@ def send_telegram(text: str) -> None:
     logger.info("Wysłano paczkę AKO2/AKO3 na Telegram (chat_id=%s).", TELEGRAM_CHAT_ID)
 
 
-def run_session(session: str) -> None:
+def run_session(session: str, is_test_run: bool = False) -> None:
     now_local = datetime.now(TZ)
     session_key = get_session_key(session, now_local)
     used_in_session = load_session_used_events(session_key)
@@ -399,16 +441,9 @@ def run_session(session: str) -> None:
     sports = fetch_all_target_sports()
     all_picks: List[Dict[str, Any]] = []
 
-    for s in sports:
+    for s, group_label in sports:
         s_key = s.get("key", "")
         s_title = s.get("title", s_key)
-        grp_raw = (s.get("group") or "").lower()
-
-        group_label = "Sport"
-        for k, label in TARGET_GROUPS.items():
-            if k in grp_raw or s_key.lower().startswith(k):
-                group_label = label
-                break
 
         events = fetch_events_for_sport(s_key)
         if not events:
@@ -431,7 +466,7 @@ def run_session(session: str) -> None:
         max_coupons=MAX_COUPONS,
         already_used_in_session=used_in_session,
     )
-    message = format_telegram_message(session, window_start, window_end, coupons)
+    message = format_telegram_message(session, window_start, window_end, coupons, is_test_run=is_test_run)
     send_telegram(message)
 
     if newly_used:
@@ -445,11 +480,11 @@ def main() -> None:
     current_session = resolve_current_session(now_init)
 
     if START_NOW:
-        logger.info("START_NOW=true — wysyłka od razu dla bieżącej sesji [%s]...", current_session)
+        logger.info("START_NOW=true — wysyłka testowa od razu dla bieżącej sesji [%s]...", current_session)
         try:
-            run_session(current_session)
+            run_session(current_session, is_test_run=True)
         except Exception as exc:
-            logger.exception("Błąd przy wysyłce startowej: %s", exc)
+            logger.exception("Błąd przy wysyłce testowej: %s", exc)
     else:
         logger.info("Start w trybie oczekiwania. Planowo: 08:00 (dzień) i 20:00 (noc).")
 
@@ -471,7 +506,7 @@ def main() -> None:
             fired_today.add(slot)
             session_to_run = schedule_map[slot]
             try:
-                run_session(session_to_run)
+                run_session(session_to_run, is_test_run=False)
             except Exception as exc:
                 logger.exception("Błąd podczas sesji %s (%s): %s", session_to_run, slot, exc)
 
