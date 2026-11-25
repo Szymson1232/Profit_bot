@@ -7,34 +7,22 @@ from itertools import combinations
 from statistics import mean, median
 from typing import List, Dict, Any, Tuple, Set, Optional
 from zoneinfo import ZoneInfo
-
 import requests
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("PROFIT_MACHINE_V2")
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "64ea0f27d1bf2d4c4eeabf5e6b836be6").strip()
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
-).strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
-TZ_NAME = os.getenv("TIMEZONE", "Europe/Warsaw")
-TZ = ZoneInfo(TZ_NAME)
-
+TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Warsaw"))
 START_NOW = os.getenv("START_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
 DAILY_DROP_HOUR = int(os.getenv("DAILY_DROP_HOUR", "6"))
 DAILY_DROP_MINUTE = int(os.getenv("DAILY_DROP_MINUTE", "0"))
-
 STATE_FILE = os.getenv("VIP_STATE_FILE", "vip_2067_used_events.json").strip()
 
 UNIT_PLN = int(os.getenv("UNIT_PLN", "25"))
-MIN_UNITS = int(os.getenv("MIN_UNITS", "1"))
-MAX_UNITS = int(os.getenv("MAX_UNITS", "4"))
-
 MIN_DAILY_COUPONS = int(os.getenv("MIN_DAILY_COUPONS", "4"))
 MAX_DAILY_COUPONS = int(os.getenv("MAX_DAILY_COUPONS", "10"))
 
@@ -51,13 +39,7 @@ STRONG_EDGE_RATIO = float(os.getenv("STRONG_EDGE_RATIO", "1.08"))
 SNIPER_EDGE_RATIO = float(os.getenv("SNIPER_EDGE_RATIO", "1.14"))
 MAX_SUSPICIOUS_SPREAD = float(os.getenv("MAX_SUSPICIOUS_SPREAD", "1.45"))
 
-EXCLUDED_SPORT_PREFIXES = (
-    "horse_racing",
-    "greyhound_racing",
-    "politics",
-    "cricket",
-)
-
+EXCLUDED_PREFIXES = ("horse_racing", "greyhound_racing", "politics", "cricket")
 BASE_URL = "https://api.the-odds-api.com/v4"
 
 
@@ -65,24 +47,18 @@ def is_allowed_sport(sport: Dict[str, Any]) -> bool:
     key = (sport.get("key") or "").lower()
     if not key or sport.get("active") is False:
         return False
-    if any(key.startswith(prefix) for prefix in EXCLUDED_SPORT_PREFIXES):
-        return False
-    return True
+    return not any(key.startswith(p) for p in EXCLUDED_PREFIXES)
 
 
-def key_fallback(sport: Dict[str, Any]) -> str:
-    return (sport.get("key") or "Sport").replace("_", " ").title()
-
-
-def prettify_sport_name(sport: Dict[str, Any]) -> str:
+def prettify_sport(sport: Dict[str, Any]) -> str:
     title = (sport.get("title") or "").strip()
     group = (sport.get("group") or "").strip()
     if title and group and group.lower() not in title.lower():
         return f"{group} — {title}"
-    return title or key_fallback(sport)
+    return title or (sport.get("key") or "Sport").replace("_", " ").title()
 
 
-def load_used_events_for_day(day_str: str) -> Set[str]:
+def load_used_events(day_str: str) -> Set[str]:
     if not os.path.exists(STATE_FILE):
         return set()
     try:
@@ -91,121 +67,28 @@ def load_used_events_for_day(day_str: str) -> Set[str]:
         if isinstance(data, dict) and data.get("day") == day_str and isinstance(data.get("used_event_ids"), list):
             return {str(x) for x in data["used_event_ids"] if x}
     except Exception as exc:
-        logger.warning("Nie udało się wczytać stanu dobowego: %s", exc)
+        logger.warning("Błąd odczytu stanu: %s", exc)
     return set()
 
 
-def save_used_events_for_day(day_str: str, used_ids: Set[str]) -> None:
+def save_used_events(day_str: str, used_ids: Set[str]) -> None:
     try:
-        state_dir = os.path.dirname(STATE_FILE)
-        if state_dir:
-            os.makedirs(state_dir, exist_ok=True)
-        tmp_path = STATE_FILE + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "day": day_str,
-                    "used_event_ids": sorted(used_ids),
-                    "updated_at": datetime.now(TZ).isoformat(),
-                },
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-        os.replace(tmp_path, STATE_FILE)
+        d = os.path.dirname(STATE_FILE)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"day": day_str, "used_event_ids": sorted(used_ids)}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, STATE_FILE)
     except Exception as exc:
-        logger.warning("Nie udało się zapisać stanu dobowego: %s", exc)
+        logger.warning("Błąd zapisu stanu: %s", exc)
 
 
-def get_rolling_24h_window(now_local: datetime) -> Tuple[datetime, datetime]:
-    return now_local - timedelta(minutes=15), now_local + timedelta(hours=24)
-
-
-def fetch_active_sports() -> List[Dict[str, Any]]:
-    url = f"{BASE_URL}/sports"
-    params = {"apiKey": ODDS_API_KEY, "all": "false"}
-    try:
-        resp = requests.get(url, params=params, timeout=25)
-        if resp.status_code != 200:
-            logger.warning("Błąd pobierania listy sportów (status=%s)", resp.status_code)
-            return []
-        sports = resp.json()
-        if not isinstance(sports, list):
-            return []
-        filtered = [s for s in sports if isinstance(s, dict) and is_allowed_sport(s)]
-        logger.info("Załadowano %d aktywnych rozgrywek do skanowania VIP.", len(filtered))
-        return filtered
-    except Exception as exc:
-        logger.warning("Wyjątek podczas pobierania listy sportów: %s", exc)
-        return []
-
-
-def fetch_sport_odds(sport_key: str) -> List[Dict[str, Any]]:
-    url = f"{BASE_URL}/sports/{sport_key}/odds"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": "eu,uk,us,au",
-        "markets": "h2h",
-        "oddsFormat": "decimal",
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=25)
-        if resp.status_code == 404:
-            return []
-        if resp.status_code != 200:
-            logger.warning("Błąd pobierania kursów dla %s (status=%s)", sport_key, resp.status_code)
-            return []
-        data = resp.json()
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.warning("Błąd pobierania kursów dla %s: %s", sport_key, exc)
-        return []
-
-
-def analyze_anomaly_and_value(best_odds: float, all_odds: List[float]) -> Dict[str, Any]:
-    avg_odds = mean(all_odds) if all_odds else best_odds
-    if len(all_odds) >= 3:
-        peers = sorted(all_odds)[:-1]
-        ref_odds = median(peers)
-    elif len(all_odds) == 2:
-        ref_odds = sorted(all_odds)[0]
-    else:
-        ref_odds = best_odds
-
-    edge_ratio = (best_odds / ref_odds) if ref_odds > 0 else 1.0
-    max_to_min = (max(all_odds) / min(all_odds)) if len(all_odds) >= 2 and min(all_odds) > 0 else 1.0
-    implied_prob = (1.0 / best_odds) if best_odds > 0 else 0.0
-
-    spread_penalty = 0.0
-    if max_to_min > MAX_SUSPICIOUS_SPREAD:
-        spread_penalty = (max_to_min - MAX_SUSPICIOUS_SPREAD) * 28.0
-
-    anomaly_bonus = 0.0
-    signal_tag = "VALUE"
-    if edge_ratio >= SNIPER_EDGE_RATIO and max_to_min <= MAX_SUSPICIOUS_SPREAD:
-        anomaly_bonus = 10.0
-        signal_tag = "BŁĄD BUKA / ANOMALIA"
-    elif edge_ratio >= STRONG_EDGE_RATIO and max_to_min <= MAX_SUSPICIOUS_SPREAD:
-        anomaly_bonus = 5.5
-        signal_tag = "MOCNY EDGE"
-
-    score = round((edge_ratio * 96.0) + (implied_prob * 38.0) + anomaly_bonus - spread_penalty, 2)
-
-    return {
-        "score": score,
-        "edge_ratio": round(edge_ratio, 3),
-        "avg_odds": round(avg_odds, 2),
-        "max_to_min": round(max_to_min, 2),
-        "bookmakers_count": len(all_odds),
-        "signal_tag": signal_tag,
-    }
-
-
-def parse_commence_time(commence_raw: Any) -> Optional[datetime]:
-    if not isinstance(commence_raw, str) or not commence_raw.strip():
+def parse_dt(raw: Any) -> Optional[datetime]:
+    if not isinstance(raw, str) or not raw.strip():
         return None
     try:
-        dt = datetime.fromisoformat(commence_raw.strip().replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=ZoneInfo("UTC"))
         return dt.astimezone(TZ)
@@ -213,146 +96,314 @@ def parse_commence_time(commence_raw: Any) -> Optional[datetime]:
         return None
 
 
-def extract_picks_from_events(
+def fetch_sports() -> List[Dict[str, Any]]:
+    try:
+        r = requests.get(f"{BASE_URL}/sports", params={"apiKey": ODDS_API_KEY, "all": "false"}, timeout=25)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        return [s for s in data if isinstance(s, dict) and is_allowed_sport(s)] if isinstance(data, list) else []
+    except Exception as exc:
+        logger.warning("Błąd listy sportów: %s", exc)
+        return []
+
+
+def fetch_odds(sport_key: str) -> List[Dict[str, Any]]:
+    try:
+        r = requests.get(
+            f"{BASE_URL}/sports/{sport_key}/odds",
+            params={"apiKey": ODDS_API_KEY, "regions": "eu,uk,us,au", "markets": "h2h", "oddsFormat": "decimal"},
+            timeout=25,
+        )
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.warning("Błąd kursów %s: %s", sport_key, exc)
+        return []
+
+
+def analyze_pick(best_odds: float, all_odds: List[float]) -> Dict[str, Any]:
+    avg_odds = mean(all_odds) if all_odds else best_odds
+    if len(all_odds) >= 3:
+        ref = median(sorted(all_odds)[:-1])
+    elif len(all_odds) == 2:
+        ref = sorted(all_odds)[0]
+    else:
+        ref = best_odds
+
+    edge = (best_odds / ref) if ref > 0 else 1.0
+    spread = (max(all_odds) / min(all_odds)) if len(all_odds) >= 2 and min(all_odds) > 0 else 1.0
+    prob = (1.0 / best_odds) if best_odds > 0 else 0.0
+    penalty = max(0.0, spread - MAX_SUSPICIOUS_SPREAD) * 28.0
+
+    tag, bonus = "VALUE", 0.0
+    if edge >= SNIPER_EDGE_RATIO and spread <= MAX_SUSPICIOUS_SPREAD:
+        tag, bonus = "BŁĄD BUKA / ANOMALIA", 10.0
+    elif edge >= STRONG_EDGE_RATIO and spread <= MAX_SUSPICIOUS_SPREAD:
+        tag, bonus = "MOCNY EDGE", 5.5
+
+    score = round((edge * 96.0) + (prob * 38.0) + bonus - penalty, 2)
+    return {"score": score, "edge": round(edge, 3), "avg": round(avg_odds, 2), "spread": round(spread, 2), "tag": tag}
+
+
+def extract_picks(
     events: List[Dict[str, Any]],
     sport_key: str,
     sport_label: str,
-    window_start: datetime,
-    window_end: datetime,
-    blocked_ids: Set[str],
+    start_dt: datetime,
+    end_dt: datetime,
+    blocked: Set[str],
     relaxed: bool = False,
 ) -> List[Dict[str, Any]]:
-    picks: List[Dict[str, Any]] = []
+    out_picks: List[Dict[str, Any]] = []
     min_edge = 1.01 if relaxed else MIN_EDGE_RATIO
 
     for ev in events:
         if not isinstance(ev, dict):
             continue
-
-        ev_id = str(ev.get("id") or "").strip()
-        if not ev_id or ev_id in blocked_ids:
+        eid = str(ev.get("id") or "").strip()
+        if not eid or eid in blocked:
+            continue
+        dt = parse_dt(ev.get("commence_time"))
+        if dt is None or not (start_dt <= dt <= end_dt):
+            continue
+        home = str(ev.get("home_team") or "").strip()
+        away = str(ev.get("away_team") or "").strip()
+        if not home or not away:
             continue
 
-        commence_local = parse_commence_time(ev.get("commence_time"))
-        if commence_local is None:
-            continue
-
-        if not (window_start <= commence_local <= window_end):
-            continue
-
-        home = ev.get("home_team")
-        away = ev.get("away_team")
-        if not isinstance(home, str) or not isinstance(away, str) or not home.strip() or not away.strip():
-            continue
-
-        home = home.strip()
-        away = away.strip()
-        odds_by_side: Dict[str, List[Tuple[float, str]]] = {home: [], away: []}
-
-        bookmakers = ev.get("bookmakers")
-        if not isinstance(bookmakers, list):
-            continue
-
-        for bm in bookmakers:
+        sides: Dict[str, List[Tuple[float, str]]] = {home: [], away: []}
+        for bm in ev.get("bookmakers") or []:
             if not isinstance(bm, dict):
                 continue
-            bm_title = str(bm.get("title") or "Bookmaker")
-            markets = bm.get("markets")
-            if not isinstance(markets, list):
-                continue
-            for mkt in markets:
+            bm_name = str(bm.get("title") or "Bookmaker")
+            for mkt in bm.get("markets") or []:
                 if not isinstance(mkt, dict) or mkt.get("key") != "h2h":
                     continue
-                outcomes = mkt.get("outcomes")
-                if not isinstance(outcomes, list):
-                    continue
-                for out in outcomes:
-                    if not isinstance(out, dict):
+                for o in mkt.get("outcomes") or []:
+                    if not isinstance(o, dict):
                         continue
-                    name = out.get("name")
-                    price = out.get("price")
-                    if name in odds_by_side and isinstance(price, (int, float)) and not isinstance(price, bool):
-                        price_f = float(price)
-                        if 1.15 <= price_f <= 6.0:
-                            odds_by_side[name].append((price_f, bm_title))
+                    name = o.get("name")
+                    price = o.get("price")
+                    if name in sides and isinstance(price, (int, float)) and not isinstance(price, bool):
+                        p = float(price)
+                        if 1.15 <= p <= 6.0:
+                            sides[name].append((p, bm_name))
 
-        for selection, entries in odds_by_side.items():
+        for sel, entries in sides.items():
             if not entries:
                 continue
-            best_price, best_bm = max(entries, key=lambda x: x[0])
-            all_prices = [p for p, _ in entries]
-            analysis = analyze_anomaly_and_value(best_price, all_prices)
-
-            if analysis["edge_ratio"] < min_edge:
-                continue
-
-            picks.append(
-                {
-                    "event_id": ev_id,
+            best_p, best_bm = max(entries, key=lambda x: x[0])
+            info = analyze_pick(best_p, [x[0] for x in entries])
+            if info["edge"] >= min_edge:
+                out_picks.append({
+                    "event_id": eid,
                     "sport_key": sport_key,
                     "sport_label": sport_label,
                     "home": home,
                     "away": away,
-                    "selection": selection,
-                    "odds": round(best_price, 2),
-                    "avg_odds": analysis["avg_odds"],
-                    "edge_ratio": analysis["edge_ratio"],
-                    "max_to_min": analysis["max_to_min"],
-                    "bookmakers_count": analysis["bookmakers_count"],
-                    "signal_tag": analysis["signal_tag"],
+                    "selection": sel,
+                    "odds": round(best_p, 2),
+                    "avg_odds": info["avg"],
+                    "edge": info["edge"],
+                    "spread": info["spread"],
+                    "tag": info["tag"],
                     "bookmaker": best_bm,
-                    "commence_local": commence_local,
-                    "score": analysis["score"],
-                }
-            )
-
-    return picks
+                    "commence": dt,
+                    "score": info["score"],
+                })
+    return out_picks
 
 
-def assign_units_2067(
-    coupon_type: str, odds: float, score: float, max_edge: float, max_spread: float
-) -> int:
+def calc_units(ctype: str, odds: float, score: float, max_edge: float, max_spread: float) -> int:
     if max_spread > MAX_SUSPICIOUS_SPREAD:
         return 1
-
-    units = 1
-    if coupon_type == "SOLO":
+    if ctype == "SOLO":
         if odds <= 2.20 and max_edge >= STRONG_EDGE_RATIO and score >= 122.0:
-            units = 4
-        elif odds <= 2.65 and max_edge >= STRONG_EDGE_RATIO and score >= 117.0:
-            units = 3
-        elif score >= 113.0:
-            units = 2
-        else:
-            units = 1
-    elif coupon_type == "AKO2":
+            return 4
+        if odds <= 2.65 and max_edge >= STRONG_EDGE_RATIO and score >= 117.0:
+            return 3
+        return 2 if score >= 113.0 else 1
+    if ctype == "AKO2":
         if odds <= 2.50 and max_edge >= STRONG_EDGE_RATIO and score >= 120.0:
-            units = 3
-        elif score >= 114.0:
-            units = 2
-        else:
-            units = 1
-    elif coupon_type == "AKO3":
-        if odds <= 3.10 and max_edge >= STRONG_EDGE_RATIO and score >= 118.0:
-            units = 2
-        else:
-            units = 1
-
-    return max(MIN_UNITS, min(MAX_UNITS, units))
+            return 3
+        return 2 if score >= 114.0 else 1
+    if odds <= 3.10 and max_edge >= STRONG_EDGE_RATIO and score >= 118.0:
+        return 2
+    return 1
 
 
-def compose_daily_vip_pack(
-    picks: List[Dict[str, Any]],
-    min_coupons: int = MIN_DAILY_COUPONS,
-    max_coupons: int = MAX_DAILY_COUPONS,
-    blocked_ids: Optional[Set[str]] = None,
-) -> Tuple[List[Dict[str, Any]], Set[str]]:
-    already_used = set(blocked_ids or set())
+def make_coupon(ctype: str, label: str, legs: List[Dict[str, Any]], odds: float, score: float, max_e: float, max_sp: float) -> Dict[str, Any]:
+    units = calc_units(ctype, odds, score, max_e, max_sp)
+    stake = units * UNIT_PLN
+    return {
+        "type": ctype,
+        "label": label,
+        "legs": legs,
+        "odds": odds,
+        "units": units,
+        "stake_pln": stake,
+        "potential_return": round(stake * odds, 2),
+        "score": score,
+        "max_edge": max_e,
+        "event_ids": {x["event_id"] for x in legs},
+    }
 
-    best_per_event: Dict[str, Dict[str, Any]] = {}
+
+def compose_pack(picks: List[Dict[str, Any]], blocked: Set[str]) -> Tuple[List[Dict[str, Any]], Set[str]]:
+    best_by_ev: Dict[str, Dict[str, Any]] = {}
     for p in sorted(picks, key=lambda x: x["score"], reverse=True):
         eid = p["event_id"]
-        if eid not in best_per_event and eid not in already_used:
-            best_per_event[eid] = p
+        if eid not in blocked and eid not in best_by_ev:
+            best_by_ev[eid] = p
 
-    ranked = sorted(best_per_event.values(), key=lambda x: x["score"],
+    ranked = sorted(best_by_ev.values(), key=lambda x: x["score"], reverse=True)
+    cands: List[Dict[str, Any]] = []
+
+    for p in ranked:
+        if SOLO_MIN_ODDS <= p["odds"] <= SOLO_MAX_ODDS:
+            cands.append(make_coupon("SOLO", "SOLO", [p], p["odds"], p["score"], p["edge"], p["spread"]))
+
+    pool = [p for p in ranked if PARLAY_LEG_MIN_ODDS <= p["odds"] <= PARLAY_LEG_MAX_ODDS]
+    for a, b in combinations(pool[:24], 2):
+        ako = round(a["odds"] * b["odds"], 2)
+        if AKO2_MIN_ODDS <= ako <= MAX_COUPON_ODDS:
+            cands.append(make_coupon("AKO2", "AKO2", [a, b], ako, round(mean([a["score"], b["score"]]), 1), max(a["edge"], b["edge"]), max(a["spread"], b["spread"])))
+
+    for a, b, c in combinations(pool[:20], 3):
+        ako = round(a["odds"] * b["odds"] * c["odds"], 2)
+        if AKO3_MIN_ODDS <= ako <= MAX_COUPON_ODDS:
+            cands.append(make_coupon("AKO3", "AKO3", [a, b, c], ako, round(mean([a["score"], b["score"], c["score"]]), 1), max(a["edge"], b["edge"], c["edge"]), max(a["spread"], b["spread"], c["spread"])))
+
+    cands.sort(key=lambda x: (x["score"], x["max_edge"]), reverse=True)
+    selected: List[Dict[str, Any]] = []
+    used: Set[str] = set()
+
+    for c in cands:
+        if len(selected) >= MAX_DAILY_COUPONS:
+            break
+        if not (c["event_ids"] & blocked) and not (c["event_ids"] & used):
+            selected.append(c)
+            used |= c["event_ids"]
+
+    if len(selected) < MIN_DAILY_COUPONS:
+        for p in ranked:
+            if len(selected) >= MIN_DAILY_COUPONS:
+                break
+            if p["event_id"] not in blocked and p["event_id"] not in used:
+                selected.append(make_coupon("SOLO", "SOLO", [p], p["odds"], p["score"], p["edge"], p["spread"]))
+                used.add(p["event_id"])
+
+    return selected, used
+
+
+def clean_txt(val: Any) -> str:
+    return "".join(ch for ch in str(val or "") if ch not in "*_`[")
+
+
+def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any]], instant: bool) -> str:
+    tag = "NATYCHMIASTOWY ZRZUT VIP" if instant else "DOBOWY ZRZUT VIP (06:00 PL)"
+    head = (
+        f"⚡💎 *{tag} — EDYCJA 2067*\n"
+        f"🕒 Okno: `{start_dt.strftime('%d.%m %H:%M')}` – `{end_dt.strftime('%d.%m %H:%M')}`\n"
+        f"🎯 SOLO `{SOLO_MIN_ODDS:.2f}+` | AKO2 | AKO3 `{AKO3_MIN_ODDS:.2f}+` | `1j = {UNIT_PLN} PLN` (`1j–4j`)\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    if not coupons:
+        return f"{head}\n⚠️ Brak wystarczającej liczby unikalnych meczów w oknie 24h."
+
+    solo_n = sum(1 for c in coupons if c["type"] == "SOLO")
+    ako_n = len(coupons) - solo_n
+    parts = [head]
+    for i, c in enumerate(coupons, 1):
+        lines = [
+            f"*VIP #{i} [{clean_txt(c['label'])}]* | Kurs: *{c['odds']:.2f}* | Stawka: *{c['units']}j ({c['stake_pln']} PLN)* "
+            f"| Wygrana: *{c['potential_return']:.2f} PLN* | Edge: `x{c['max_edge']:.2f}`"
+        ]
+        for leg in c["legs"]:
+            lines.append(
+                f"• *{clean_txt(leg['sport_label'])}* — `{leg['commence'].strftime('%d.%m %H:%M')}` [{clean_txt(leg['tag'])}]\n"
+                f"  `{clean_txt(leg['home'])} vs {clean_txt(leg['away'])}`\n"
+                f"  Typ: *{clean_txt(leg['selection'])}* @ *{leg['odds']:.2f}* (śr. `{leg['avg_odds']:.2f}`, {clean_txt(leg['bookmaker'])})"
+            )
+        parts.append("\n".join(lines))
+
+    parts.append(
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 *{len(coupons)}* kuponów (*{solo_n}x SOLO* + *{ako_n}x AKO*) | 💰 Suma: *{sum(c['units'] for c in coupons)}j ({sum(c['stake_pln'] for c in coupons)} PLN)*"
+    )
+    return "\n\n".join(parts)
+
+
+def send_tg(text: str) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    for idx in range(0, len(text), 3900):
+        chunk = text[idx : idx + 3900]
+        try:
+            r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk, "parse_mode": "Markdown", "disable_web_page_preview": True}, timeout=25)
+            if r.status_code != 200:
+                requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk, "disable_web_page_preview": True}, timeout=25)
+        except Exception as exc:
+            logger.warning("Błąd Telegram: %s", exc)
+
+
+def run_pack(instant: bool = False) -> None:
+    now = datetime.now(TZ)
+    day_str = now.date().isoformat()
+    blocked = load_used_events(day_str)
+    start_dt, end_dt = now - timedelta(minutes=15), now + timedelta(hours=24)
+
+    sports = fetch_sports()
+    all_picks: List[Dict[str, Any]] = []
+    for sp in sports:
+        key = str(sp.get("key") or "").strip()
+        if key:
+            all_picks.extend(extract_picks(fetch_odds(key), key, prettify_sport(sp), start_dt, end_dt, blocked, False))
+
+    if len(all_picks) < MIN_DAILY_COUPONS * 2:
+        seen = {(p["event_id"], p["selection"]) for p in all_picks}
+        for sp in sports:
+            key = str(sp.get("key") or "").strip()
+            if key:
+                for p in extract_picks(fetch_odds(key), key, prettify_sport(sp), start_dt, end_dt, blocked, True):
+                    k = (p["event_id"], p["selection"])
+                    if k not in seen:
+                        seen.add(k)
+                        all_picks.append(p)
+
+    coupons, used = compose_pack(all_picks, blocked)
+    send_tg(format_msg(start_dt, end_dt, coupons, instant))
+    if used:
+        save_used_events(day_str, blocked | used)
+
+
+def main() -> None:
+    if START_NOW:
+        try:
+            run_pack(instant=True)
+        except Exception as exc:
+            logger.exception("Błąd startu: %s", exc)
+
+    fired: Set[Tuple[int, int]] = set()
+    last_day = None
+    while True:
+        try:
+            now = datetime.now(TZ)
+            if now.date() != last_day:
+                fired.clear()
+                last_day = now.date()
+            slot = (now.hour, now.minute)
+            if slot == (DAILY_DROP_HOUR, DAILY_DROP_MINUTE) and slot not in fired:
+                fired.add(slot)
+                run_pack(instant=False)
+        except Exception as exc:
+            logger.exception("Błąd pętli: %s", exc)
+        pytime.sleep(20)
+
+
+if __name__ == "__main__":
+    main()
