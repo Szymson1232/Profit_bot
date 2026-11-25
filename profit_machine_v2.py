@@ -16,7 +16,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PITOS_VIP_BOT")
 
-# Nowy klucz API (możesz też nadpisać zmienną środowiskową ODDS_API_KEY)
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "e88171c0d8a0108a310ab634acdfe4ef").strip()
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo"
@@ -26,36 +25,38 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 TZ_NAME = os.getenv("TIMEZONE", "Europe/Warsaw")
 TZ = ZoneInfo(TZ_NAME)
 
-# Od razu na start zapodaje sesję na nockę (po 20:00 / w nocy), potem pilnuje 08:00 (dzień) i 20:00 (noc)
+# Na start odpala bieżącą sesję, żeby od razu wygenerować paczkę pod dzisiejszy dzień
 START_NOW = os.getenv("START_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
 
-# Plik przechowujący event_id już użytych meczów w aktualnej sesji
 SESSION_STATE_FILE = os.getenv("SESSION_STATE_FILE", "session_used_events.json").strip()
 
-# Jednostki VIP: 1j = 25 PLN, drabinka 1j / 2j / 3j / 4j
+# Bankroll / jednostki VIP: 1j = 25 PLN, drabinka 1j / 2j / 3j / 4j
 UNIT_PLN = int(os.getenv("UNIT_PLN", "25"))
 MIN_UNITS = int(os.getenv("MIN_UNITS", "1"))
 MAX_UNITS = int(os.getenv("MAX_UNITS", "4"))
 
-# Limity kuponów na sesję: min 3, max 10 (poniżej min 3 sensownych kuponów -> PASS)
+# Limity kuponów na sesję: min 3, max 10 (poniżej min 3 -> PASS)
 MIN_COUPONS = int(os.getenv("MIN_COUPONS_PER_RUN", "3"))
 MAX_COUPONS = int(os.getenv("MAX_COUPONS_PER_RUN", "10"))
 
-# Zasady kursowe (gra już bez podatku)
+# Zasady kursowe pod skuteczność i regularny zysk (bez podatku)
 SINGLE_MIN_ODDS = float(os.getenv("SINGLE_MIN_ODDS", "1.70"))
+SINGLE_MAX_ODDS = float(os.getenv("SINGLE_MAX_ODDS", "2.95"))
 AKO3_MIN_ODDS = float(os.getenv("AKO3_MIN_ODDS", "2.00"))
-AKO_MAX_ODDS = float(os.getenv("AKO_MAX_ODDS", "7.50"))
-MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.20"))
-MAX_LEG_ODDS = float(os.getenv("MAX_LEG_ODDS", "5.50"))
+AKO_MAX_ODDS = float(os.getenv("AKO_MAX_ODDS", "5.50"))
+MIN_LEG_ODDS = float(os.getenv("MIN_LEG_ODDS", "1.22"))
+MAX_LEG_ODDS = float(os.getenv("MAX_LEG_ODDS", "3.10"))
 
-# Twarde filtry jakości / błędu bukmachera (edge względem mediany innych bukmacherów)
-MIN_EDGE_RATIO = float(os.getenv("MIN_EDGE_RATIO", "1.06"))
-STRONG_EDGE_RATIO = float(os.getenv("STRONG_EDGE_RATIO", "1.12"))
-PEREŁKA_EDGE_RATIO = float(os.getenv("PERELKA_EDGE_RATIO", "1.18"))
-MIN_SINGLE_QUALITY = float(os.getenv("MIN_SINGLE_QUALITY", "114.0"))
-MIN_COUPON_QUALITY = float(os.getenv("MIN_COUPON_QUALITY", "110.0"))
+# Filtry jakości i bezpieczeństwa (ochrona przed fałszywym edge i dużą wariancją)
+MIN_BOOKMAKERS = int(os.getenv("MIN_BOOKMAKERS", "3"))
+MIN_EDGE_RATIO = float(os.getenv("MIN_EDGE_RATIO", "1.04"))
+MAX_EDGE_RATIO = float(os.getenv("MAX_EDGE_RATIO", "1.22"))
+STRONG_EDGE_RATIO = float(os.getenv("STRONG_EDGE_RATIO", "1.08"))
+PEREŁKA_EDGE_RATIO = float(os.getenv("PERELKA_EDGE_RATIO", "1.12"))
+MIN_SINGLE_QUALITY = float(os.getenv("MIN_SINGLE_QUALITY", "115.0"))
+MIN_COUPON_QUALITY = float(os.getenv("MIN_COUPON_QUALITY", "114.0"))
+MAX_PER_SPORT_HOUR = int(os.getenv("MAX_PER_SPORT_HOUR", "2"))
 
-# Docelowe dyscypliny VIP: kosz, hokej, tenis, futbol amerykański, esport
 TARGET_GROUPS = {
     "basketball": "Koszykówka",
     "icehockey": "Hokej",
@@ -102,10 +103,7 @@ def detect_group_label(group_raw: str, sport_key: str, sport_title: str) -> str 
 
 
 def resolve_current_session(now_local: datetime) -> str:
-    """Określa bieżącą sesję: do 19:59 -> 'day', od 20:00 -> 'night'."""
-    if now_local.hour < 20:
-        return "day"
-    return "night"
+    return "day" if now_local.hour < 20 else "night"
 
 
 def get_session_key(session: str, now_local: datetime) -> str:
@@ -143,12 +141,7 @@ def save_session_used_events(session_key: str, used_event_ids: Set[str]) -> None
 
 
 def get_session_window(session: str, now_local: datetime) -> Tuple[datetime, datetime]:
-    """
-    - 'day' (08:00): od startu do 21:30 tego samego dnia.
-    - 'night' (20:00 lub start na nockę): od teraz do 08:30 kolejnego dnia.
-    """
     today = now_local.date()
-
     if session == "day":
         start = now_local
         end = datetime.combine(today, time(21, 30), tzinfo=TZ)
@@ -203,9 +196,8 @@ def fetch_events_for_sport(sport_key: str) -> List[Dict[str, Any]]:
 
 def evaluate_pick_value(best_odds: float, all_odds: List[float]) -> Tuple[float, float, float]:
     """
-    Zwraca (quality_score, edge_vs_peers, avg_odds):
-    - edge_vs_peers: stosunek najlepszego kursu do mediany/średniej pozostałych bukmacherów
-      (wyłapuje rozjazdy i błędy wyceny na rynku).
+    Liczy jakość i edge względem konsensusu innych bukmacherów z premią za większe prawdopodobieństwo.
+    Ucinamy nadmiernie rozstrzelone kursy (podejrzane linie / różne zasady rynków).
     """
     avg_odds = mean(all_odds) if all_odds else best_odds
     if len(all_odds) >= 2:
@@ -216,7 +208,8 @@ def evaluate_pick_value(best_odds: float, all_odds: List[float]) -> Tuple[float,
 
     edge_ratio = (best_odds / ref_odds) if ref_odds > 0 else 1.0
     implied_prob = 1.0 / best_odds if best_odds > 0 else 0.0
-    quality_score = round((edge_ratio * 105.0) + (implied_prob * 25.0), 2)
+    # Premia za wyższe implied_prob, żeby promować skuteczność, a nie ślepe polowanie na długie kursy
+    quality_score = round((edge_ratio * 92.0) + (implied_prob * 48.0), 2)
     return quality_score, round(edge_ratio, 3), round(avg_odds, 2)
 
 
@@ -265,13 +258,14 @@ def extract_vip_picks(
                             odds_by_side[name].append((price_f, bm_title))
 
         for selection, entries in odds_by_side.items():
-            if not entries:
+            if len(entries) < MIN_BOOKMAKERS:
                 continue
+
             best_price, best_bm = max(entries, key=lambda x: x[0])
             all_prices = [p for p, _ in entries]
             quality_score, edge_ratio, avg_odds = evaluate_pick_value(best_price, all_prices)
 
-            if edge_ratio < MIN_EDGE_RATIO:
+            if not (MIN_EDGE_RATIO <= edge_ratio <= MAX_EDGE_RATIO):
                 continue
 
             picks.append(
@@ -299,32 +293,45 @@ def choose_units_vip(
     coupon_type: str, total_odds: float, avg_quality: float, max_edge: float, avg_edge: float
 ) -> int:
     """
-    Dobiera stawkę w jednostkach 1j..4j (1j = 25 PLN) pod siłę błędu buka / value i ryzyko formatu.
-    4j zostawiamy tylko na najwyraźniejsze perełki.
+    Konserwatywny dobór jednostek (1j..4j, 1j = 25 PLN) pod skuteczność i regularny zysk:
+    - wysokie kursy (>= 2.80) schodzą do 1j, żeby nie topić bankrolla na wariancji,
+    - 3j / 4j tylko dla wyraźnych przewag przy rozsądnym kursie i wysokiej jakości.
     """
-    units = 1
+    if total_odds >= 2.80:
+        return 1
 
+    units = 1
     if coupon_type == "SINGLE":
-        if max_edge >= PEREŁKA_EDGE_RATIO and avg_quality >= 124.0 and total_odds <= 2.40:
+        if total_odds <= 2.25 and max_edge >= PEREŁKA_EDGE_RATIO and avg_quality >= 125.0:
             units = 4
-        elif max_edge >= STRONG_EDGE_RATIO and avg_quality >= 118.0:
+        elif total_odds <= 2.45 and max_edge >= STRONG_EDGE_RATIO and avg_quality >= 120.0:
             units = 3
         elif avg_quality >= MIN_SINGLE_QUALITY:
             units = 2
     elif coupon_type == "AKO2":
-        if avg_edge >= STRONG_EDGE_RATIO and avg_quality >= 120.0 and total_odds <= 3.20:
+        if total_odds <= 2.65 and avg_edge >= STRONG_EDGE_RATIO and avg_quality >= 121.0:
             units = 3
-        elif avg_quality >= 114.0:
+        elif avg_quality >= MIN_COUPON_QUALITY:
             units = 2
         else:
             units = 1
     elif coupon_type == "AKO3":
-        if avg_edge >= STRONG_EDGE_RATIO and avg_quality >= 118.0 and total_odds <= 3.80:
+        if total_odds <= 3.10 and avg_edge >= STRONG_EDGE_RATIO and avg_quality >= 119.0:
             units = 2
         else:
             units = 1
 
     return max(MIN_UNITS, min(MAX_UNITS, units))
+
+
+def _respects_sport_hour_cap(legs: List[Dict[str, Any]], max_per_slot: int = MAX_PER_SPORT_HOUR) -> bool:
+    counts: Dict[Tuple[str, str], int] = {}
+    for leg in legs:
+        slot_key = (leg["sport_key"], leg["commence_local"].strftime("%Y-%m-%d %H"))
+        counts[slot_key] = counts.get(slot_key, 0) + 1
+        if counts[slot_key] > max_per_slot:
+            return False
+    return True
 
 
 def build_vip_coupons(
@@ -334,12 +341,15 @@ def build_vip_coupons(
     already_used_in_session: Set[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Set[str]]:
     """
-    Buduje paczkę VIP (SINGLE 1.70+, AKO2, AKO3 2.00+) z unikalnych meczów:
-    - zero powtórek event_id w całej paczce i w bieżącej sesji,
-    - jeśli uzbiera się mniej niż min_coupons (domyślnie 3) jakościowych kuponów, zwraca pustą listę -> PASS.
+    Buduje paczkę VIP (SINGLE 1.70–2.95, AKO2, AKO3 2.00+) z unikalnych meczów.
+    Jeśli sensownych kuponów jest mniej niż min_coupons (domyślnie 3), zwraca PASS.
     """
     blocked = set(already_used_in_session or set())
-    valid_picks = [p for p in picks if p["event_id"] not in blocked and p["edge_ratio"] >= MIN_EDGE_RATIO]
+    valid_picks = [
+        p
+        for p in picks
+        if p["event_id"] not in blocked and (MIN_EDGE_RATIO <= p["edge_ratio"] <= MAX_EDGE_RATIO)
+    ]
 
     best_per_event: Dict[str, Dict[str, Any]] = {}
     for p in sorted(valid_picks, key=lambda x: x["quality_score"], reverse=True):
@@ -350,9 +360,9 @@ def build_vip_coupons(
     ranked_picks = sorted(best_per_event.values(), key=lambda x: x["quality_score"], reverse=True)
     candidates: List[Dict[str, Any]] = []
 
-    # 1. Kandydaci SINGIEL (kurs >= 1.70 + wysoka jakość i rozjazd rynkowy)
+    # 1. Single w przedziale 1.70 - 2.95
     for p in ranked_picks:
-        if p["odds"] >= SINGLE_MIN_ODDS and p["quality_score"] >= MIN_SINGLE_QUALITY:
+        if SINGLE_MIN_ODDS <= p["odds"] <= SINGLE_MAX_ODDS and p["quality_score"] >= MIN_SINGLE_QUALITY:
             units = choose_units_vip("SINGLE", p["odds"], p["quality_score"], p["edge_ratio"], p["edge_ratio"])
             stake_pln = units * UNIT_PLN
             candidates.append(
@@ -370,11 +380,13 @@ def build_vip_coupons(
                 }
             )
 
-    # 2. Kandydaci AKO2
+    # 2. AKO2
     if len(ranked_picks) >= 2:
         for leg_a, leg_b in combinations(ranked_picks, 2):
+            if not _respects_sport_hour_cap([leg_a, leg_b]):
+                continue
             ako = round(leg_a["odds"] * leg_b["odds"], 2)
-            if not (1.50 <= ako <= AKO_MAX_ODDS):
+            if not (1.55 <= ako <= AKO_MAX_ODDS):
                 continue
             avg_q = round(mean([leg_a["quality_score"], leg_b["quality_score"]]), 1)
             avg_edge = round(mean([leg_a["edge_ratio"], leg_b["edge_ratio"]]), 3)
@@ -398,9 +410,11 @@ def build_vip_coupons(
                 }
             )
 
-    # 3. Kandydaci AKO3 (łączny kurs >= 2.00)
+    # 3. AKO3 (łączny kurs >= 2.00)
     if len(ranked_picks) >= 3:
         for leg_a, leg_b, leg_c in combinations(ranked_picks, 3):
+            if not _respects_sport_hour_cap([leg_a, leg_b, leg_c]):
+                continue
             ako = round(leg_a["odds"] * leg_b["odds"] * leg_c["odds"], 2)
             if not (AKO3_MIN_ODDS <= ako <= AKO_MAX_ODDS):
                 continue
@@ -426,16 +440,27 @@ def build_vip_coupons(
                 }
             )
 
-    # Sortujemy po jakości i sile rozjazdu rynkowego
-    candidates.sort(key=lambda c: (c["quality"], c["max_edge"]), reverse=True)
+    candidates.sort(key=lambda c: (c["quality"], -c["odds"], c["max_edge"]), reverse=True)
 
     selected_coupons: List[Dict[str, Any]] = []
     used_in_run: Set[str] = set()
+    slot_used_count: Dict[Tuple[str, str], int] = {}
 
     for cand in candidates:
         if len(selected_coupons) >= max_coupons:
             break
         if cand["event_ids"] & blocked or cand["event_ids"] & used_in_run:
+            continue
+
+        temp_counts = dict(slot_used_count)
+        slot_ok = True
+        for leg in cand["legs"]:
+            s_key = (leg["sport_key"], leg["commence_local"].strftime("%Y-%m-%d %H"))
+            temp_counts[s_key] = temp_counts.get(s_key, 0) + 1
+            if temp_counts[s_key] > MAX_PER_SPORT_HOUR:
+                slot_ok = False
+                break
+        if not slot_ok:
             continue
 
         selected_coupons.append(
@@ -452,8 +477,8 @@ def build_vip_coupons(
             }
         )
         used_in_run.update(cand["event_ids"])
+        slot_used_count = temp_counts
 
-    # Twardy warunek: min 3 sensowne kupony w sesji, inaczej PASS
     if len(selected_coupons) < min_coupons:
         logger.info(
             "Znaleziono tylko %d jakościowych kuponów (wymagane min. %d) -> PASS.",
@@ -468,20 +493,20 @@ def build_vip_coupons(
 def format_vip_telegram_message(
     session: str, window_start: datetime, window_end: datetime, coupons: List[Dict[str, Any]]
 ) -> str:
-    session_label = "SESJA NOC" if session == "night" else "SESJA DZIEŃ"
+    session_label = "SESJA DZIEŃ" if session == "day" else "SESJA NOC"
 
     header = (
         f"💎🔥 *VIP SELEKCJA — {session_label}*\n"
         f"🕒 Okno: `{window_start.strftime('%d.%m %H:%M')}` – `{window_end.strftime('%d.%m %H:%M')}` ({TZ_NAME})\n"
-        f"🎯 Single `{SINGLE_MIN_ODDS:.2f}+` | AKO2 | AKO3 `{AKO3_MIN_ODDS:.2f}+` | Stawka: `1j = {UNIT_PLN} PLN` (`1j–4j`)\n"
+        f"🎯 Single `{SINGLE_MIN_ODDS:.2f}–{SINGLE_MAX_ODDS:.2f}` | AKO2 | AKO3 `{AKO3_MIN_ODDS:.2f}+` | `1j = {UNIT_PLN} PLN` (`1j–4j`)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if not coupons:
         return (
             header
-            + f"🛑 *PASS* — rynek nie wygenerował minimum `{MIN_COUPONS}` perełek z realnym value (`edge >= {MIN_EDGE_RATIO:.2f}`). "
-            f"Nie przepalamy bankrolla na siłę."
+            + f"🛑 *PASS* — brak minimum `{MIN_COUPONS}` pewnych, jakościowych kuponów z czystym value w tym oknie. "
+            f"Chronimy bankroll."
         )
 
     total_units = sum(c["units"] for c in coupons)
@@ -504,7 +529,7 @@ def format_vip_telegram_message(
 
     blocks.append(
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Kuponów w paczce: *{len(coupons)}* (min. `{MIN_COUPONS}` / max. `{MAX_COUPONS}`, bez powtórek)\n"
+        f"📊 Kuponów: *{len(coupons)}* (min. `{MIN_COUPONS}` / max. `{MAX_COUPONS}`, bez powtórek)\n"
         f"💰 Łączna ekspozycja: *{total_units}j ({total_stake} PLN)*"
     )
     return "\n\n".join(blocks)
