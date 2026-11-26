@@ -43,7 +43,7 @@ AKO3_MIN_ODDS = float(os.getenv("AKO3_MIN_ODDS", "2.00"))
 MAX_COUPON_ODDS = float(os.getenv("MAX_COUPON_ODDS", "8.50"))
 
 MIN_EDGE_RATIO = float(os.getenv("MIN_EDGE_RATIO", "1.03"))
-EVENING_MIN_EDGE_RATIO = float(os.getenv("EVENING_MIN_EDGE_RATIO", "1.05"))
+EVENING_MIN_EDGE_RATIO = float(os.getenv("EVENING_MIN_EDGE_RATIO", "1.04"))
 STRONG_EDGE_RATIO = float(os.getenv("STRONG_EDGE_RATIO", "1.08"))
 SNIPER_EDGE_RATIO = float(os.getenv("SNIPER_EDGE_RATIO", "1.14"))
 MAX_SUSPICIOUS_SPREAD = float(os.getenv("MAX_SUSPICIOUS_SPREAD", "1.45"))
@@ -109,9 +109,12 @@ def fetch_sports() -> List[Dict[str, Any]]:
     try:
         r = requests.get(f"{BASE_URL}/sports", params={"apiKey": ODDS_API_KEY, "all": "false"}, timeout=25)
         if r.status_code != 200:
+            logger.warning("Odds API sports status=%s body=%s", r.status_code, r.text[:180])
             return []
         data = r.json()
-        return [s for s in data if isinstance(s, dict) and is_allowed_sport(s)] if isinstance(data, list) else []
+        res = [s for s in data if isinstance(s, dict) and is_allowed_sport(s)] if isinstance(data, list) else []
+        logger.info("Aktywne sporty z API: %d", len(res))
+        return res
     except Exception as exc:
         logger.warning("Błąd listy sportów: %s", exc)
         return []
@@ -125,6 +128,7 @@ def fetch_odds(sport_key: str) -> List[Dict[str, Any]]:
             timeout=25,
         )
         if r.status_code != 200:
+            logger.warning("Odds API %s status=%s", sport_key, r.status_code)
             return []
         data = r.json()
         return data if isinstance(data, list) else []
@@ -334,7 +338,7 @@ def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any
         f"━━━━━━━━━━━━━━━━━━━━"
     )
     if not coupons:
-        return f"{head}\n🛑 *PASS* — brak wartych gry okazji w oknie nocnym."
+        return f"{head}\n🛑 *PASS* — brak nowych okazji wartych gry w tym oknie."
 
     solo_n = sum(1 for c in coupons if c["type"] == "SOLO")
     ako_n = len(coupons) - solo_n
@@ -361,6 +365,7 @@ def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any
 
 def send_tg(text: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Brak tokena lub chat_id Telegrama.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     for idx in range(0, len(text), 3900):
@@ -368,7 +373,11 @@ def send_tg(text: str) -> None:
         try:
             r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk, "parse_mode": "Markdown", "disable_web_page_preview": True}, timeout=25)
             if r.status_code != 200:
-                requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk, "disable_web_page_preview": True}, timeout=25)
+                logger.warning("Telegram Markdown fallback status=%s body=%s", r.status_code, r.text[:180])
+                r2 = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk, "disable_web_page_preview": True}, timeout=25)
+                logger.info("Telegram plain status=%s", r2.status_code)
+            else:
+                logger.info("Wysłano paczkę na Telegram (status=200).")
         except Exception as exc:
             logger.warning("Błąd Telegram: %s", exc)
 
@@ -386,6 +395,7 @@ def run_pack(mode: str = "morning", skip_empty_tg: bool = False) -> None:
     min_c = 1 if is_evening else MIN_MORNING_COUPONS
     max_c = MAX_EVENING_COUPONS if is_evening else MAX_MORNING_COUPONS
 
+    logger.info("Skan tryb=%s okno=%s..%s edge>=%.2f", mode, start_dt.strftime("%H:%M"), end_dt.strftime("%d.%m %H:%M"), edge_req)
     sports = fetch_sports()
     all_picks: List[Dict[str, Any]] = []
     for sp in sports:
@@ -404,20 +414,22 @@ def run_pack(mode: str = "morning", skip_empty_tg: bool = False) -> None:
                         seen.add(k)
                         all_picks.append(p)
 
+    logger.info("Kandydatów w oknie: %d", len(all_picks))
     coupons, used = compose_pack(all_picks, blocked, min_c, max_c, allow_fallback_fill=not is_evening)
-    if coupons:
+    if coupons or not skip_empty_tg:
         send_tg(format_msg(start_dt, end_dt, coupons, mode))
-    elif not skip_empty_tg:
-        logger.info("Brak kuponów w trybie %s — pomijam pusty komunikat.", mode)
+    else:
+        logger.info("Brak kuponów w trybie %s — pomijam wysyłkę.", mode)
     if used:
         save_used_events(day_str, blocked | used)
 
 
 def main() -> None:
+    logger.info("Bot wystartował w strefie %s", TZ)
     if START_NOW:
         try:
             current_mode = "evening" if datetime.now(TZ).hour >= EVENING_DROP_HOUR else "instant"
-            run_pack(mode=current_mode, skip_empty_tg=True)
+            run_pack(mode=current_mode, skip_empty_tg=False)
         except Exception as exc:
             logger.exception("Błąd startu: %s", exc)
 
