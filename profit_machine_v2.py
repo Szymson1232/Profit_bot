@@ -18,13 +18,18 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Warsaw"))
 START_NOW = os.getenv("START_NOW", "true").strip().lower() in ("1", "true", "yes", "on")
-DAILY_DROP_HOUR = int(os.getenv("DAILY_DROP_HOUR", "6"))
-DAILY_DROP_MINUTE = int(os.getenv("DAILY_DROP_MINUTE", "0"))
+
+MORNING_DROP_HOUR = int(os.getenv("MORNING_DROP_HOUR", "6"))
+MORNING_DROP_MINUTE = int(os.getenv("MORNING_DROP_MINUTE", "0"))
+EVENING_DROP_HOUR = int(os.getenv("EVENING_DROP_HOUR", "20"))
+EVENING_DROP_MINUTE = int(os.getenv("EVENING_DROP_MINUTE", "0"))
+
 STATE_FILE = os.getenv("VIP_STATE_FILE", "vip_2067_used_events.json").strip()
 
 UNIT_PLN = int(os.getenv("UNIT_PLN", "25"))
-MIN_DAILY_COUPONS = int(os.getenv("MIN_DAILY_COUPONS", "4"))
-MAX_DAILY_COUPONS = int(os.getenv("MAX_DAILY_COUPONS", "10"))
+MIN_MORNING_COUPONS = int(os.getenv("MIN_MORNING_COUPONS", "4"))
+MAX_MORNING_COUPONS = int(os.getenv("MAX_MORNING_COUPONS", "10"))
+MAX_EVENING_COUPONS = int(os.getenv("MAX_EVENING_COUPONS", "4"))
 
 SOLO_MIN_ODDS = float(os.getenv("SOLO_MIN_ODDS", "1.50"))
 SOLO_MAX_ODDS = float(os.getenv("SOLO_MAX_ODDS", "4.20"))
@@ -35,6 +40,7 @@ AKO3_MIN_ODDS = float(os.getenv("AKO3_MIN_ODDS", "2.00"))
 MAX_COUPON_ODDS = float(os.getenv("MAX_COUPON_ODDS", "8.50"))
 
 MIN_EDGE_RATIO = float(os.getenv("MIN_EDGE_RATIO", "1.03"))
+EVENING_MIN_EDGE_RATIO = float(os.getenv("EVENING_MIN_EDGE_RATIO", "1.07"))
 STRONG_EDGE_RATIO = float(os.getenv("STRONG_EDGE_RATIO", "1.08"))
 SNIPER_EDGE_RATIO = float(os.getenv("SNIPER_EDGE_RATIO", "1.14"))
 MAX_SUSPICIOUS_SPREAD = float(os.getenv("MAX_SUSPICIOUS_SPREAD", "1.45"))
@@ -155,10 +161,9 @@ def extract_picks(
     start_dt: datetime,
     end_dt: datetime,
     blocked: Set[str],
-    relaxed: bool = False,
+    min_edge_req: float,
 ) -> List[Dict[str, Any]]:
     out_picks: List[Dict[str, Any]] = []
-    min_edge = 1.01 if relaxed else MIN_EDGE_RATIO
 
     for ev in events:
         if not isinstance(ev, dict):
@@ -197,7 +202,7 @@ def extract_picks(
                 continue
             best_p, best_bm = max(entries, key=lambda x: x[0])
             info = analyze_pick(best_p, [x[0] for x in entries])
-            if info["edge"] >= min_edge:
+            if info["edge"] >= min_edge_req:
                 out_picks.append({
                     "event_id": eid,
                     "sport_key": sport_key,
@@ -252,7 +257,13 @@ def make_coupon(ctype: str, label: str, legs: List[Dict[str, Any]], odds: float,
     }
 
 
-def compose_pack(picks: List[Dict[str, Any]], blocked: Set[str]) -> Tuple[List[Dict[str, Any]], Set[str]]:
+def compose_pack(
+    picks: List[Dict[str, Any]],
+    blocked: Set[str],
+    min_coupons: int,
+    max_coupons: int,
+    allow_fallback_fill: bool,
+) -> Tuple[List[Dict[str, Any]], Set[str]]:
     best_by_ev: Dict[str, Dict[str, Any]] = {}
     for p in sorted(picks, key=lambda x: x["score"], reverse=True):
         eid = p["event_id"]
@@ -282,19 +293,22 @@ def compose_pack(picks: List[Dict[str, Any]], blocked: Set[str]) -> Tuple[List[D
     used: Set[str] = set()
 
     for c in cands:
-        if len(selected) >= MAX_DAILY_COUPONS:
+        if len(selected) >= max_coupons:
             break
         if not (c["event_ids"] & blocked) and not (c["event_ids"] & used):
             selected.append(c)
             used |= c["event_ids"]
 
-    if len(selected) < MIN_DAILY_COUPONS:
+    if allow_fallback_fill and len(selected) < min_coupons:
         for p in ranked:
-            if len(selected) >= MIN_DAILY_COUPONS:
+            if len(selected) >= min_coupons:
                 break
             if p["event_id"] not in blocked and p["event_id"] not in used:
                 selected.append(make_coupon("SOLO", "SOLO", [p], p["odds"], p["score"], p["edge"], p["spread"]))
                 used.add(p["event_id"])
+
+    if len(selected) < min_coupons:
+        return [], set()
 
     return selected, used
 
@@ -303,8 +317,13 @@ def clean_txt(val: Any) -> str:
     return "".join(ch for ch in str(val or "") if ch not in "*_`[")
 
 
-def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any]], instant: bool) -> str:
-    tag = "NATYCHMIASTOWY ZRZUT VIP" if instant else "DOBOWY ZRZUT VIP (06:00 PL)"
+def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any]], mode: str) -> str:
+    mode_titles = {
+        "instant": "NATYCHMIASTOWY ZRZUT VIP",
+        "morning": "PORANNY ZRZUT VIP (06:00 PL)",
+        "evening": "WIECZORNY SKAN VIP (20:00 PL)",
+    }
+    tag = mode_titles.get(mode, "ZRZUT VIP")
     head = (
         f"⚡💎 *{tag} — EDYCJA 2067*\n"
         f"🕒 Okno: `{start_dt.strftime('%d.%m %H:%M')}` – `{end_dt.strftime('%d.%m %H:%M')}`\n"
@@ -312,7 +331,7 @@ def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any
         f"━━━━━━━━━━━━━━━━━━━━"
     )
     if not coupons:
-        return f"{head}\n⚠️ Brak wystarczającej liczby unikalnych meczów w oknie 24h."
+        return f"{head}\n🛑 *PASS* — brak nowych okazji wartych gry w tym oknie."
 
     solo_n = sum(1 for c in coupons if c["type"] == "SOLO")
     ako_n = len(coupons) - solo_n
@@ -351,32 +370,38 @@ def send_tg(text: str) -> None:
             logger.warning("Błąd Telegram: %s", exc)
 
 
-def run_pack(instant: bool = False) -> None:
+def run_pack(mode: str = "morning", skip_empty_tg: bool = False) -> None:
     now = datetime.now(TZ)
     day_str = now.date().isoformat()
     blocked = load_used_events(day_str)
     start_dt, end_dt = now - timedelta(minutes=15), now + timedelta(hours=24)
+
+    is_evening = mode == "evening"
+    edge_req = EVENING_MIN_EDGE_RATIO if is_evening else MIN_EDGE_RATIO
+    min_c = 1 if is_evening else MIN_MORNING_COUPONS
+    max_c = MAX_EVENING_COUPONS if is_evening else MAX_MORNING_COUPONS
 
     sports = fetch_sports()
     all_picks: List[Dict[str, Any]] = []
     for sp in sports:
         key = str(sp.get("key") or "").strip()
         if key:
-            all_picks.extend(extract_picks(fetch_odds(key), key, prettify_sport(sp), start_dt, end_dt, blocked, False))
+            all_picks.extend(extract_picks(fetch_odds(key), key, prettify_sport(sp), start_dt, end_dt, blocked, edge_req))
 
-    if len(all_picks) < MIN_DAILY_COUPONS * 2:
+    if not is_evening and len(all_picks) < min_c * 2:
         seen = {(p["event_id"], p["selection"]) for p in all_picks}
         for sp in sports:
             key = str(sp.get("key") or "").strip()
             if key:
-                for p in extract_picks(fetch_odds(key), key, prettify_sport(sp), start_dt, end_dt, blocked, True):
+                for p in extract_picks(fetch_odds(key), key, prettify_sport(sp), start_dt, end_dt, blocked, 1.01):
                     k = (p["event_id"], p["selection"])
                     if k not in seen:
                         seen.add(k)
                         all_picks.append(p)
 
-    coupons, used = compose_pack(all_picks, blocked)
-    send_tg(format_msg(start_dt, end_dt, coupons, instant))
+    coupons, used = compose_pack(all_picks, blocked, min_c, max_c, allow_fallback_fill=not is_evening)
+    if coupons or not skip_empty_tg:
+        send_tg(format_msg(start_dt, end_dt, coupons, mode))
     if used:
         save_used_events(day_str, blocked | used)
 
@@ -384,12 +409,18 @@ def run_pack(instant: bool = False) -> None:
 def main() -> None:
     if START_NOW:
         try:
-            run_pack(instant=True)
+            current_mode = "evening" if datetime.now(TZ).hour >= EVENING_DROP_HOUR else "instant"
+            run_pack(mode=current_mode, skip_empty_tg=False)
         except Exception as exc:
             logger.exception("Błąd startu: %s", exc)
 
+    schedule_slots = {
+        (MORNING_DROP_HOUR, MORNING_DROP_MINUTE): "morning",
+        (EVENING_DROP_HOUR, EVENING_DROP_MINUTE): "evening",
+    }
     fired: Set[Tuple[int, int]] = set()
     last_day = None
+
     while True:
         try:
             now = datetime.now(TZ)
@@ -397,9 +428,9 @@ def main() -> None:
                 fired.clear()
                 last_day = now.date()
             slot = (now.hour, now.minute)
-            if slot == (DAILY_DROP_HOUR, DAILY_DROP_MINUTE) and slot not in fired:
+            if slot in schedule_slots and slot not in fired:
                 fired.add(slot)
-                run_pack(instant=False)
+                run_pack(mode=schedule_slots[slot], skip_empty_tg=False)
         except Exception as exc:
             logger.exception("Błąd pętli: %s", exc)
         pytime.sleep(20)
