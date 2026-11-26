@@ -24,6 +24,9 @@ MORNING_DROP_MINUTE = int(os.getenv("MORNING_DROP_MINUTE", "0"))
 EVENING_DROP_HOUR = int(os.getenv("EVENING_DROP_HOUR", "20"))
 EVENING_DROP_MINUTE = int(os.getenv("EVENING_DROP_MINUTE", "0"))
 
+MORNING_WINDOW_HOURS = int(os.getenv("MORNING_WINDOW_HOURS", "24"))
+EVENING_WINDOW_HOURS = int(os.getenv("EVENING_WINDOW_HOURS", "9"))
+
 STATE_FILE = os.getenv("VIP_STATE_FILE", "vip_2067_used_events.json").strip()
 
 UNIT_PLN = int(os.getenv("UNIT_PLN", "25"))
@@ -40,7 +43,7 @@ AKO3_MIN_ODDS = float(os.getenv("AKO3_MIN_ODDS", "2.00"))
 MAX_COUPON_ODDS = float(os.getenv("MAX_COUPON_ODDS", "8.50"))
 
 MIN_EDGE_RATIO = float(os.getenv("MIN_EDGE_RATIO", "1.03"))
-EVENING_MIN_EDGE_RATIO = float(os.getenv("EVENING_MIN_EDGE_RATIO", "1.07"))
+EVENING_MIN_EDGE_RATIO = float(os.getenv("EVENING_MIN_EDGE_RATIO", "1.05"))
 STRONG_EDGE_RATIO = float(os.getenv("STRONG_EDGE_RATIO", "1.08"))
 SNIPER_EDGE_RATIO = float(os.getenv("SNIPER_EDGE_RATIO", "1.14"))
 MAX_SUSPICIOUS_SPREAD = float(os.getenv("MAX_SUSPICIOUS_SPREAD", "1.45"))
@@ -321,7 +324,7 @@ def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any
     mode_titles = {
         "instant": "NATYCHMIASTOWY ZRZUT VIP",
         "morning": "PORANNY ZRZUT VIP (06:00 PL)",
-        "evening": "WIECZORNY SKAN VIP (20:00 PL)",
+        "evening": "NOCNY SKAN VIP (20:00 PL)",
     }
     tag = mode_titles.get(mode, "ZRZUT VIP")
     head = (
@@ -331,7 +334,7 @@ def format_msg(start_dt: datetime, end_dt: datetime, coupons: List[Dict[str, Any
         f"━━━━━━━━━━━━━━━━━━━━"
     )
     if not coupons:
-        return f"{head}\n🛑 *PASS* — brak nowych okazji wartych gry w tym oknie."
+        return f"{head}\n🛑 *PASS* — brak wartych gry okazji w oknie nocnym."
 
     solo_n = sum(1 for c in coupons if c["type"] == "SOLO")
     ako_n = len(coupons) - solo_n
@@ -374,9 +377,11 @@ def run_pack(mode: str = "morning", skip_empty_tg: bool = False) -> None:
     now = datetime.now(TZ)
     day_str = now.date().isoformat()
     blocked = load_used_events(day_str)
-    start_dt, end_dt = now - timedelta(minutes=15), now + timedelta(hours=24)
 
     is_evening = mode == "evening"
+    hours_ahead = EVENING_WINDOW_HOURS if is_evening else MORNING_WINDOW_HOURS
+    start_dt, end_dt = now - timedelta(minutes=15), now + timedelta(hours=hours_ahead)
+
     edge_req = EVENING_MIN_EDGE_RATIO if is_evening else MIN_EDGE_RATIO
     min_c = 1 if is_evening else MIN_MORNING_COUPONS
     max_c = MAX_EVENING_COUPONS if is_evening else MAX_MORNING_COUPONS
@@ -400,8 +405,10 @@ def run_pack(mode: str = "morning", skip_empty_tg: bool = False) -> None:
                         all_picks.append(p)
 
     coupons, used = compose_pack(all_picks, blocked, min_c, max_c, allow_fallback_fill=not is_evening)
-    if coupons or not skip_empty_tg:
+    if coupons:
         send_tg(format_msg(start_dt, end_dt, coupons, mode))
+    elif not skip_empty_tg:
+        logger.info("Brak kuponów w trybie %s — pomijam pusty komunikat.", mode)
     if used:
         save_used_events(day_str, blocked | used)
 
@@ -410,7 +417,7 @@ def main() -> None:
     if START_NOW:
         try:
             current_mode = "evening" if datetime.now(TZ).hour >= EVENING_DROP_HOUR else "instant"
-            run_pack(mode=current_mode, skip_empty_tg=False)
+            run_pack(mode=current_mode, skip_empty_tg=True)
         except Exception as exc:
             logger.exception("Błąd startu: %s", exc)
 
