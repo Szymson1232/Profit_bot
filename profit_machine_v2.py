@@ -12,7 +12,7 @@ import requests
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("PROFIT_MACHINE_V2")
 
-ODDS_API_KEY = os.getenv("ODDS_API_KEY", "64ea0f27d1bf2d4c4eeabf5e6b836be6").strip()
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "521d6e48430c4b6791eb5e8d3b8735ca").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9258087483:AAG8GBtZ4DSm2f-xtxGCvdNvhBxm1OrYbGo").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004306783026").strip()
 
